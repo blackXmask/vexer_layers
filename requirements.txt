@@ -1,0 +1,26 @@
+# Vexer Enterprise Intelligence Platform - Python dependencies
+# Pinned to the exact versions validated by the 55-test suite.
+# Install:  python -m venv .venv
+#           .venv\Scripts\pip install -r requirements.txt
+
+# --- Web / API layer ---
+fastapi==0.141.1
+uvicorn==0.54.0
+starlette==1.7.0
+
+# --- Validation / config models ---
+pydantic==2.13.5
+
+# --- Agent orchestration (Domain 6) ---
+langgraph==1.2.12
+langgraph-checkpoint==4.2.0
+langgraph-checkpoint-sqlite==3.1.1
+langchain==1.4.2
+langchain-core==1.6.5
+
+# --- HTTP client (used by the OpenAI / Ollama LLM adapters) ---
+httpx==0.28.1
+
+# --- Testing ---
+pytest==9.1.1
+anyio==4.15.1

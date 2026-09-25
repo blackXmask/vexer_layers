@@ -1,0 +1,170 @@
+{
+  "project": "Vexer Enterprise Intelligence Platform",
+  "domain": "Domain 6: AI Agents & Agent Orchestration",
+  "python_version": "3.12",
+  "components": [
+    "supervisor",
+    "market_agent",
+    "risk_agent",
+    "legal_agent",
+    "hitl_gate",
+    "state_machine",
+    "tools"
+  ],
+
+  "llm": {
+    "provider": "MOCK",
+    "model_name": "vexer-intelligence-engine-v1",
+    "temperature": 0.1,
+    "api_base": null,
+    "api_key": null,
+    "api_key_env": "VEXER_LLM_API_KEY",
+    "timeout_seconds": 30,
+    "mock": {
+      "thought_process": "Decomposed multi-domain enterprise inquiry into specialized workstreams.",
+      "decompose_rules": [
+        {
+          "target_agent": "MARKET_INTELLIGENCE",
+          "keywords": ["market", "competitor", "industry", "tender", "rfp", "intelligence", "uae", "united arab emirates", "dubai", "abu dhabi"],
+          "description": "Analyze competitor dynamics, market posture, and external OSINT signals.",
+          "input_data": { "topic": "{{query}}" }
+        },
+        {
+          "target_agent": "OPPORTUNITY_RISK",
+          "keywords": ["risk", "rfp", "tender", "bid", "opportunity", "contract", "uae", "united arab emirates", "dubai", "abu dhabi"],
+          "description": "Evaluate RFP compliance match, operational constraints, and multi-dimensional risk matrix.",
+          "input_data": { "rfp_name": "{{query}}", "requirements": ["Data sovereignty", "Cloud security", "Audit trail"] }
+        },
+        {
+          "target_agent": "LEGAL_REGULATORY",
+          "keywords": ["legal", "compliance", "regulation", "gdpr", "ai act", "ip", "patent", "rfp", "tender", "uae", "united arab emirates", "dubai", "abu dhabi"],
+          "description": "Examine regulatory directives, IP infringement risks, and governance mandates.",
+          "input_data": { "scope": "{{query}}" }
+        }
+      ],
+      "fallback_subtask": {
+        "target_agent": "MARKET_INTELLIGENCE",
+        "description": "Broad strategic market evaluation for: {{query}}",
+        "input_data": { "topic": "{{query}}" }
+      },
+      "analysis_response": {
+        "analysis": "Enterprise reasoning completed for query: {{query}}",
+        "confidence": 0.94
+      }
+    }
+  },
+
+  "supervisor": {
+    "system_prompt": "You are the Master Orchestrator for the Vexer Enterprise Intelligence Platform. Decompose the user inquiry into strategic domain-specific subtasks for MARKET_INTELLIGENCE, OPPORTUNITY_RISK, and LEGAL_REGULATORY. Return structured JSON with subtasks.",
+    "planning_message": "Supervisor planned {{count}} enterprise subtask(s). Reasoning: {{thought}}",
+    "fallback_subtasks": [
+      { "target_agent": "MARKET_INTELLIGENCE", "description": "Market analysis: {{query}}", "input_data": { "topic": "{{query}}" } },
+      { "target_agent": "OPPORTUNITY_RISK", "description": "Risk assessment: {{query}}", "input_data": { "rfp_name": "{{query}}", "requirements": ["Data sovereignty", "Cloud security"] } },
+      { "target_agent": "LEGAL_REGULATORY", "description": "Legal compliance: {{query}}", "input_data": { "scope": "{{query}}" } }
+    ]
+  },
+
+  "agents": {
+    "market_intelligence": {
+      "enabled": true,
+      "confidence_score": 0.94,
+      "extra_citations": ["Person A Knowledge Graph"]
+    },
+    "opportunity_risk": {
+      "enabled": true,
+      "confidence_score": 0.91,
+      "high_risk_fit_score_below": 80,
+      "default_requirements": ["Data sovereignty", "Cloud security", "Audit trail"],
+      "citations": ["Enterprise Capability Matrix", "ISO27001 Certification Registry"],
+      "base_risk_assessment": { "cyber_risk": "MEDIUM", "contract_penalty_exposure": "MODERATE" }
+    },
+    "legal_regulatory": {
+      "enabled": true,
+      "confidence_score": 0.96,
+      "ip_risk_note": "Low - No trademark or patent blocking conflicts identified in current claims.",
+      "mandatory_governance_clauses": [
+        "Human supervisor approval required before binding enterprise commitment",
+        "Immutable cryptographic audit logging enabled for all agent decisions"
+      ]
+    }
+  },
+
+  "orchestrator": {
+    "human_gate_prompt": "Governance Officer review required. Please approve or reject with comments.",
+    "risk_levels_requiring_approval": ["HIGH", "CRITICAL"],
+    "always_require_human_approval": false,
+    "honor_legal_signoff": true,
+    "fail_closed_on_task_failure": true,
+    "risk_level_on_task_failure": "HIGH",
+    "recommendation_proceed": "Proceed with formal opportunity qualification",
+    "recommendation_halt": "Halt qualification",
+    "recommendation_compliance": "Enforce AI Act compliance controls and audit log streaming",
+
+    "decision_report": {
+      "not_run_label": "Not evaluated",
+      "market_template": "{{growth}} Competitive posture: {{posture}} Top signal: {{signal}}",
+      "risk_template": "Risk level {{level}} - RFP fit {{fit}}% ({{gaps}} gap(s)); bid recommendation: {{bid}}",
+      "legal_template": "Compliance {{status}} - {{regulations}}; human sign-off required: {{signoff}}",
+      "verdict_fallback": "Proceed with caution",
+      "verdict_fallback_reason": "No configured decision rule matched the aggregated facts.",
+      "decision_matrix": [
+        { "when": { "task_failures": true }, "decision": "Hold - analysis incomplete", "reason": "One or more intelligence agents failed; mandatory re-run before any commitment." },
+        { "when": { "compliance_status": "FLAGGED", "risk_level": ["HIGH", "CRITICAL"] }, "decision": "Do not proceed without legal clearance", "reason": "Regulated scope combined with elevated risk exposure." },
+        { "when": { "compliance_status": "FLAGGED" }, "decision": "Expand with compliance preparation", "reason": "Commercial case is viable but regulatory obligations must be resolved first." },
+        { "when": { "risk_level": ["HIGH", "CRITICAL"] }, "decision": "Proceed with caution - mitigate risk first", "reason": "Risk exposure exceeds the configured tolerance." },
+        { "when": { "fit_below": 50 }, "decision": "Do not pursue this opportunity", "reason": "Capability fit is below the qualification threshold." },
+        { "when": {}, "decision": "Proceed", "reason": "No blocking regulatory, market or risk signals detected." }
+      ],
+      "_comment": "Flat decision contract {query, market, risk, legal, decision}. First matching rule wins; {} always matches. Conditions: task_failures (bool), compliance_status (FLAGGED/CLEARED/UNKNOWN), risk_level (LOW/MEDIUM/HIGH/CRITICAL), fit_below (strict less-than)."
+    }
+  },
+
+  "tools": {
+    "permissions": {
+      "query_knowledge_graph": ["SUPERVISOR", "MARKET_INTELLIGENCE", "OPPORTUNITY_RISK"],
+      "query_osint_signals": ["SUPERVISOR", "MARKET_INTELLIGENCE"],
+      "evaluate_rfp_fit": ["SUPERVISOR", "OPPORTUNITY_RISK"],
+      "check_legal_compliance": ["SUPERVISOR", "LEGAL_REGULATORY"]
+    },
+    "rfp_fit": {
+      "go_threshold_percent": 70,
+      "capability_match_keywords": ["sovereignty", "security", "audit"]
+    },
+    "compliance": {
+      "detected_regulations": ["EU AI Act", "GDPR", "NIST CSF"],
+      "cross_border_keywords": ["data transfer"],
+      "high_risk_ai_keywords": ["autonomous agent", "ai agent", "defense"]
+    },
+    "integration": {
+      "enable_domain7": true,
+      "enable_domain8": true,
+      "enable_domain9": true,
+      "enable_domain1": false,
+      "enable_domain4": false,
+      "enable_domain5": false,
+      "signal_limit": 6,
+      "_comment": "D7/D8/D9 are Person B's own domains. D1/D4/D5 are Person A seams - flip to true once those packages exist; contracts in INTEGRATION.md."
+    },
+    "circuit_breaker": {
+      "failure_threshold": 3,
+      "recovery_seconds": 30
+    },
+    "audit": {
+      "max_records": 1000,
+      "_comment": "Upper bound on in-memory audit records (oldest trimmed first)."
+    }
+  },
+
+  "api": {
+    "title": "Vexer Enterprise Intelligence Brain - Orchestration Gateway",
+    "version": "2.1.0",
+    "description": "Domain 6 AI Agents & Agent Orchestration Engine",
+    "database_path": "vexer_agent_checkpoints.db",
+    "auth": {
+      "enabled": false,
+      "api_key": null,
+      "api_key_env": "VEXER_AGENT_API_KEY",
+      "_comment": "Set enabled=true and provide api_key (or env var) to protect all routes except /health. Send as X-API-Key header."
+    }
+  }
+}

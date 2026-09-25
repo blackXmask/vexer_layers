@@ -1,0 +1,49 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "vexer-enterprise-intelligence"
+version = "0.1.0"
+description = "Vexer Enterprise Intelligence Platform - Domains 6-9 (Person B scope)"
+readme = "README.md"
+requires-python = ">=3.12"
+license = { text = "Proprietary" }
+
+dependencies = [
+    "fastapi>=0.141.1",
+    "uvicorn>=0.54.0",
+    "pydantic>=2.13.5",
+    "langgraph>=1.2.12",
+    "langgraph-checkpoint>=4.2.0",
+    "langgraph-checkpoint-sqlite>=3.1.1",
+    "langchain>=1.4.2",
+    "httpx>=0.28.1",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=9.1.1", "pyflakes>=3.0"]
+
+[tool.setuptools]
+packages = [
+    "agent_orchestrator",
+    "business_market_intelligence",
+    "opportunity_risk_intelligence",
+    "legal_regulatory_ip_intelligence",
+]
+
+[tool.setuptools.package-data]
+agent_orchestrator = ["*.json"]
+business_market_intelligence = ["*.json"]
+opportunity_risk_intelligence = ["*.json"]
+legal_regulatory_ip_intelligence = ["*.json"]
+
+[tool.pytest.ini_options]
+testpaths = [
+    "agent_orchestrator/tests",
+    "business_market_intelligence/tests",
+    "opportunity_risk_intelligence/tests",
+    "legal_regulatory_ip_intelligence/tests",
+]
+python_files = ["test_*.py"]
+addopts = "-q"

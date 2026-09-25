@@ -1,0 +1,95 @@
+{
+  "project": "Vexer Enterprise Intelligence Platform",
+  "domain": "Domain 7: Business & Market Intelligence",
+  "version": "1.0.0",
+
+  "sources": {
+    "news": {
+      "enabled": true,
+      "label": "Global Tech & Industry Wire",
+      "items": [
+        {"title": "Sovereign AI adoption accelerates across EU public sector", "body": "Record growth in government sovereign AI platforms as agencies mandate data residency and audit trails for multi-agent deployments.", "published": "2026-09-22T07:30:00", "url": "https://news.example.com/sovereign-ai-growth", "tags": ["sovereign-ai", "multi-agent"]},
+        {"title": "Defense autonomy contracts surge in Q3", "body": "Defense-tech autonomy budgets expand sharply; several record contract awards for autonomous reconnaissance and decision support.", "published": "2026-09-21T14:00:00", "url": "https://news.example.com/defense-autonomy-q3", "tags": ["defense-tech", "autonomy"]},
+        {"title": "Cross-border data transfer investigations rise", "body": "Regulators open investigations into cross-border transfers; penalties and compliance delays weigh on cloud vendors amid GDPR enforcement.", "published": "2026-09-20T09:15:00", "url": "https://news.example.com/xborder-investigations", "tags": ["data-sovereignty", "eu-ai-act"]}
+      ]
+    },
+    "tenders": {
+      "enabled": true,
+      "label": "Government Tender Board",
+      "items": [
+        {"title": "EU-wide tender: autonomous reconnaissance decision support", "body": "Open tender for autonomous agent based reconnaissance with strict data sovereignty and human oversight requirements.", "published": "2026-09-23T08:00:00", "url": "https://tenders.example.eu/recon-ai-2026", "tags": ["defense-tech", "sovereign-ai"]},
+        {"title": "RFP: enterprise compliance automation platform", "body": "RFP seeking compliance automation with audit logging, provenance tracking and regulatory change monitoring.", "published": "2026-09-19T16:45:00", "url": "https://tenders.example.eu/compliance-rfp", "tags": ["compliance", "automation"]}
+      ]
+    },
+    "social": {
+      "enabled": true,
+      "label": "Industry Social Pulse",
+      "items": [
+        {"title": "Practitioners praise new multi-agent orchestration framework", "body": "Strong community reception for open orchestration tooling; threads highlight breakthrough reliability gains.", "published": "2026-09-22T18:20:00", "url": "https://social.example.com/post/multi-agent-praise", "tags": ["multi-agent"]},
+        {"title": "Analysts warn of talent shortage in AI governance roles", "body": "Shortage of governance talent risks delivery delays; several hiring programs announced in response.", "published": "2026-09-21T11:05:00", "url": "https://social.example.com/post/governance-talent", "tags": ["compliance", "governance"]},
+        {"title": "Sentiment sours on delayed EU AI Act guidance", "body": "Negative reaction to delayed guidance; vendors fear penalty uncertainty and rework ahead of deadlines.", "published": "2026-09-20T20:40:00", "url": "https://social.example.com/post/ai-act-delay", "tags": ["eu-ai-act"]}
+      ]
+    },
+    "patents": {
+      "enabled": true,
+      "label": "Patent Filing Monitor",
+      "items": [
+        {"title": "Patent filed: provenance-verified agent memory", "body": "New filing covers cryptographic provenance for agent memory writes with audit log streaming.", "published": "2026-09-18T10:00:00", "url": "https://patents.example.com/agent-memory-provenance", "tags": ["provenance", "multi-agent"]},
+        {"title": "Patent filed: sovereign inference routing", "body": "Filing describes regional inference routing to enforce data sovereignty across jurisdiction boundaries.", "published": "2026-09-17T13:30:00", "url": "https://patents.example.com/sovereign-routing", "tags": ["sovereign-ai", "data-sovereignty"]}
+      ]
+    },
+    "analyst": {
+      "enabled": true,
+      "label": "Analyst Briefings",
+      "items": [
+        {"title": "Forecast: sovereign AI market upside revised upward", "body": "Analysts raise growth forecasts citing strong public-sector demand and compliance-driven modernization.", "published": "2026-09-22T06:00:00", "url": "https://analyst.example.com/sovereign-ai-forecast", "tags": ["sovereign-ai", "compliance"]},
+        {"title": "Briefing: consolidation threat in defense-tech autonomy", "body": "M&A pressure and margin risk flagged as large primes acquire autonomy startups; competitive threat rising.", "published": "2026-09-21T07:45:00", "url": "https://analyst.example.com/defense-consolidation", "tags": ["defense-tech", "autonomy"]}
+      ]
+    }
+  },
+
+  "sentiment": {
+    "positive_keywords": ["growth", "record", "surge", "win", "praise", "breakthrough", "upside", "raise", "strong", "accelerate"],
+    "negative_keywords": ["investigation", "penalty", "delay", "shortage", "risk", "sours", "threat", "pressure", "worsens", "warning"]
+  },
+
+  "analytics": {
+    "default_signal_limit": 10,
+    "min_relevance": 0.1,
+    "trend_min_volume": 2,
+    "spike_threshold": 1.6,
+    "competitor": {"mention_weight": 0.4, "base_threat_weight": 0.6},
+    "segment": {"growth_weight": 0.6, "size_weight": 0.4}
+  },
+
+  "competitors": [
+    {"name": "CompetitorCorp", "base_threat": 0.8, "positioning": "Broad enterprise platform play with aggressive public-sector bundling.", "strengths": ["Scale", "Distribution"], "weaknesses": ["Weak provenance story"]},
+    {"name": "NeoQuant Systems", "base_threat": 0.6, "positioning": "Niche compliance-first automation for regulated industries.", "strengths": ["Compliance depth", "Regulator relationships"], "weaknesses": ["Limited platform breadth"]},
+    {"name": "Aegis Defense AI", "base_threat": 0.7, "positioning": "Defense autonomy specialist with certified deployment pipelines.", "strengths": ["Certifications", "Prime contractor access"], "weaknesses": ["Commercial traction gaps"]}
+  ],
+
+  "segments": [
+    {"name": "Sovereign AI Platforms", "tam_usd": 12000000000, "sam_usd": 3200000000, "growth_rate": 0.24},
+    {"name": "Defense Autonomy", "tam_usd": 8500000000, "sam_usd": 1900000000, "growth_rate": 0.17},
+    {"name": "Compliance Automation", "tam_usd": 5400000000, "sam_usd": 1500000000, "growth_rate": 0.19}
+  ],
+
+  "report": {
+    "max_signals": 8,
+    "base_confidence": 0.9,
+    "per_signal_confidence_boost": 0.01
+  },
+
+  "api": {
+    "title": "Vexer Domain 7 — Business & Market Intelligence API",
+    "version": "1.0.0",
+    "description": "Signals, trends, competitor positioning and intelligence reports with full provenance.",
+    "auth": {
+      "enabled": false,
+      "api_key": null,
+      "api_key_env": "VEXER_MBI_API_KEY",
+      "_comment": "Set enabled=true + api_key (or env var). All routes except /health require the X-API-Key header."
+    }
+  }
+}
+

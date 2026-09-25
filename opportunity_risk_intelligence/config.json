@@ -1,0 +1,65 @@
+{
+  "project": "Vexer Enterprise Intelligence Platform",
+  "domain": "Domain 8: Opportunity, Risk & Requirements Intelligence",
+  "version": "1.0.0",
+
+  "capabilities": [
+    {"name": "Data sovereignty", "category": "TECHNICAL", "weight": 1.5, "keywords": ["sovereignty", "residency", "data location", "in-country"]},
+    {"name": "Cloud security", "category": "TECHNICAL", "weight": 1.5, "keywords": ["security", "encryption", "iso27001", "soc2", "hardening"]},
+    {"name": "Audit trail & provenance", "category": "GOVERNANCE", "weight": 1.5, "keywords": ["audit", "logging", "provenance", "traceability"]},
+    {"name": "Human oversight controls", "category": "GOVERNANCE", "weight": 1.0, "keywords": ["human", "oversight", "approval", "supervisor", "hitl"]},
+    {"name": "Cross-border transfer mechanism", "category": "LEGAL", "weight": 1.5, "keywords": ["transfer", "cross-border", "scc", "gdpr", "international"]},
+    {"name": "SLA & availability", "category": "OPERATIONAL", "weight": 1.0, "keywords": ["sla", "uptime", "availability", "99.9", "continuity"]},
+    {"name": "Budget alignment", "category": "FINANCIAL", "weight": 1.0, "keywords": ["budget", "cost", "price", "ceiling", "pricing"]},
+    {"name": "Delivery timeline", "category": "OPERATIONAL", "weight": 1.0, "keywords": ["timeline", "deadline", "delivery", "months", "milestone"]}
+  ],
+
+  "requirements": {
+    "default_priority": "MANDATORY",
+    "optional_keywords": ["should", "prefer", "nice-to-have", "desirable", "optional"],
+    "category_keywords": {
+      "TECHNICAL": ["security", "encryption", "cloud", "api", "integration", "performance", "sovereignty"],
+      "LEGAL": ["transfer", "gdpr", "compliance", "regulation", "contract", "liability", "cross-border"],
+      "FINANCIAL": ["budget", "cost", "price", "payment", "penalty"],
+      "OPERATIONAL": ["sla", "uptime", "timeline", "delivery", "support", "maintenance"],
+      "GOVERNANCE": ["audit", "oversight", "approval", "reporting", "logging", "provenance"]
+    }
+  },
+
+  "scoring": {
+    "go_threshold": 70.0,
+    "conditional_threshold": 50.0,
+    "gap_likelihood_increment": 0.15,
+    "gap_impact": 0.7,
+    "risk_bands": {"LOW": 0.25, "MEDIUM": 0.45, "HIGH": 0.65},
+    "opportunity_fit_weight": 0.7,
+    "opportunity_risk_weight": 0.3
+  },
+
+  "risk_register": [
+    {"risk_id": "R-CYBER", "name": "Cyber security exposure", "category": "CYBER", "likelihood": 0.4, "impact": 0.8, "triggers": ["security", "encryption", "cloud", "api"], "mitigation": "Require ISO27001 evidence, pen-test reports and encryption at rest/in transit.", "owner": "CISO"},
+    {"risk_id": "R-XBORDER", "name": "Cross-border data transfer non-compliance", "category": "LEGAL", "likelihood": 0.5, "impact": 0.9, "triggers": ["transfer", "cross-border", "international", "gdpr"], "mitigation": "Deploy SCCs plus a transfer impact assessment before any data movement.", "owner": "DPO"},
+    {"risk_id": "R-AIACT", "name": "High-risk AI obligations (EU AI Act)", "category": "COMPLIANCE", "likelihood": 0.45, "impact": 0.85, "triggers": ["ai", "agent", "autonomous", "defense", "machine learning"], "mitigation": "Implement human oversight, audit logging and a conformity assessment pipeline.", "owner": "AI Governance Lead"},
+    {"risk_id": "R-DELIVERY", "name": "Delivery timeline slippage", "category": "DELIVERY", "likelihood": 0.35, "impact": 0.6, "triggers": ["timeline", "deadline", "delivery", "milestone", "months"], "mitigation": "Stage-gated delivery plan with weekly burn-down tracking.", "owner": "Delivery Manager"},
+    {"risk_id": "R-FINANCIAL", "name": "Budget overrun & penalty exposure", "category": "FINANCIAL", "likelihood": 0.3, "impact": 0.7, "triggers": ["budget", "penalty", "price", "cost", "ceiling"], "mitigation": "Fixed-price guardrails and a contingency reserve of 10%.", "owner": "CFO"},
+    {"risk_id": "R-CAPGAP", "name": "Capability gap exposure", "category": "DELIVERY", "dynamic_gaps": true, "base_likelihood": 0.1, "impact": 0.7, "mitigation": "Close gaps via partner subcontracting or a phased capability build.", "owner": "CTO"}
+  ],
+
+  "report": {
+    "base_confidence": 0.9,
+    "per_requirement_confidence_boost": 0.01,
+    "max_risks_listed": 5
+  },
+
+  "api": {
+    "title": "Vexer Domain 8 — Opportunity, Risk & Requirements Intelligence API",
+    "version": "1.0.0",
+    "description": "RFP capability fitting, risk matrices and requirement intelligence with mitigations.",
+    "auth": {
+      "enabled": false,
+      "api_key": null,
+      "api_key_env": "VEXER_ORI_API_KEY",
+      "_comment": "Set enabled=true + api_key (or env var). All routes except /health require the X-API-Key header."
+    }
+  }
+}
