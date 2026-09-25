@@ -425,3 +425,37 @@ and maintenance status: **`docs/technology-selection.md`**.
   → enrich → persist) with DLQ and backpressure, plus the Postgres-backed audit sink so the audit
   trail survives more than one process.
 
+
+---
+
+## 11. Project structure — the 10-domain 50/50 split (confirmed by the team)
+
+The project is split into 10 technical domains across two owners. **Person B (this repository's
+author) owns 6–10.** Full map and boundary analysis: `docs/domain-ownership.md`.
+
+| Person A (1–5) | Person B (6–10) |
+|---|---|
+| 1 Organizational Intelligence | 6 AI Agents & Agent Orchestration → `agent_orchestrator/` |
+| 2 External Intelligence & OSINT | 7 Business & Market Intelligence → `business_market_intelligence/` |
+| 3 Document & Knowledge Intelligence | 8 Opportunity, Risk & Requirements → `opportunity_risk_intelligence/` |
+| 4 Knowledge Graph & Relationship Intelligence | 9 Legal, Regulatory & IP → `legal_regulatory_ip_intelligence/` |
+| 5 Evidence, Verification & Intelligence Analysis | 10 Enterprise Platform, Security & Governance → `vexer_platform/`, `migrations/`, `deploy/` |
+
+**Numbering note:** domains 6–9 kept their numbers, so no code renumbering is needed. Person A's
+domains 1–5 are renumbered relative to the old seam names, which creates the two collisions recorded
+in `docs/domain-ownership.md` §3 and §4:
+
+1. **Seam-key ambiguity.** `agent_orchestrator/bus.py` keys `domain4`/`domain5` mean *Document &
+   Knowledge* and *Knowledge Graph* under the old numbering, but the new "4" is Knowledge Graph and
+   "5" is Evidence/Verification. Recommended fix (not applied — it changes a shared config): rename
+   seam keys to `org` / `osint` / `documents` / `knowledge_graph`.
+2. **Evidence + confidence overlap.** `vexer_platform` already implements `Evidence`,
+   `ProvenanceRecord`, `Claim` and the `conf-v1` confidence methodology, which is the same surface
+   area as Person A's domain 5. Agreed split: domain 10 owns the *contracts, storage and scoring
+   interface*; Person A's domain 5 owns *verification, calibration and contradiction adjudication*,
+   and calls `score_confidence()` rather than shipping a second scorer. Two incomparable confidence
+   numbers is the failure this avoids.
+
+**This is the single most important thing to agree before Person A writes code.** Everything else in
+the backlog is recoverable; a duplicated confidence model or a misread seam key is not cheap to undo.
+
