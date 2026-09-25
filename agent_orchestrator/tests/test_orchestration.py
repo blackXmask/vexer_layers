@@ -264,7 +264,7 @@ def test_domain_failure_isolated_and_falls_back(monkeypatch, isolated_bus):
     def _boom(self, topic, limit=None):
         raise RuntimeError("D7 market store unreachable")
 
-    breaker = isolated_bus._breakers.breaker("domain7")
+    breaker = isolated_bus._breakers.breaker("market")
     breaker.reset()
     monkeypatch.setattr(d7_service.MarketIntelligenceService, "get_signals", _boom)
 
@@ -274,7 +274,7 @@ def test_domain_failure_isolated_and_falls_back(monkeypatch, isolated_bus):
     # No invented signals: the caller gets an empty list and an explicit FAILED status.
     assert signals == []
     record = ToolRegistry.get_audit_trail()[0]
-    assert record.provider == "error:domain7"
+    assert record.provider == "error:market"
     assert record.data_status == "FAILED"
     # The tool call itself succeeded; the downstream dependency did not. Both facts are recorded.
     assert record.status == "SUCCESS"
@@ -289,7 +289,7 @@ def test_circuit_breaker_opens_and_short_circuits(monkeypatch, isolated_bus):
     def _boom(self, topic, limit=None):
         raise RuntimeError("still down")
 
-    breaker = isolated_bus._breakers.breaker("domain7")
+    breaker = isolated_bus._breakers.breaker("market")
     breaker.reset()
     monkeypatch.setattr(d7_service.MarketIntelligenceService, "get_signals", _boom)
 
@@ -301,7 +301,7 @@ def test_circuit_breaker_opens_and_short_circuits(monkeypatch, isolated_bus):
     ToolRegistry.clear_audit_trail()
     ToolRegistry.query_osint_signals("x", caller_agent="MARKET_INTELLIGENCE")
     record = ToolRegistry.get_audit_trail()[0]
-    assert record.provider == "circuit-open:domain7"
+    assert record.provider == "circuit-open:market"
     assert record.data_status == "DEGRADED"
 
     breaker.reset()
@@ -399,18 +399,18 @@ def test_person_a_seams_inactive_by_default():
         assert result["data_status"] == "UNAVAILABLE"
     providers = [r.provider for r in ToolRegistry.get_audit_trail()]
     assert providers == [
-        "unavailable:domain4",
-        "unavailable:domain1",
-        "unavailable:domain5",
+        "unavailable:documents",
+        "unavailable:org",
+        "unavailable:knowledge_graph",
     ]
 
 
 def test_person_a_seams_activate_when_provider_present():
     """When Person A's service is resolvable, results and provider tags flow through."""
     fakes = {
-        "domain5": _FakeKG(),
-        "domain4": _FakeDocs(),
-        "domain1": _FakeOrg(),
+        "knowledge_graph": _FakeKG(),
+        "documents": _FakeDocs(),
+        "org": _FakeOrg(),
     }
     previous = ToolRegistry._bus
     ToolRegistry.set_bus(
@@ -429,7 +429,7 @@ def test_person_a_seams_activate_when_provider_present():
             assert result["data_status"] == "LIVE"
 
         providers = [r.provider for r in ToolRegistry.get_audit_trail()]
-        assert providers == ["domain5", "domain4", "domain1"]
+        assert providers == ["knowledge_graph", "documents", "org"]
     finally:
         ToolRegistry.set_bus(previous)
 
@@ -443,7 +443,7 @@ def test_person_a_seam_failure_falls_back_safely():
     previous = ToolRegistry._bus
     ToolRegistry.set_bus(
         ToolBus.from_config(
-            {}, service_resolver=lambda key: _Broken() if key == "domain5" else None
+            {}, service_resolver=lambda key: _Broken() if key == "knowledge_graph" else None
         )
     )
     try:
@@ -453,7 +453,7 @@ def test_person_a_seam_failure_falls_back_safely():
         assert kg["entity"] == "Vexer Corp"
         assert kg["relationships"] == []
         record = ToolRegistry.get_audit_trail()[0]
-        assert record.provider == "error:domain5"
+        assert record.provider == "error:knowledge_graph"
         assert record.data_status == "FAILED"
     finally:
         ToolRegistry.set_bus(previous)

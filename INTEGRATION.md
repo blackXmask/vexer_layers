@@ -22,15 +22,22 @@ Toggles live in `agent_orchestrator/orchestrator_config.json` → `tools.integra
 
 ```json
 "integration": {
-  "enable_domain7": true,   // own domain - market intelligence
-  "enable_domain8": true,   // own domain - opportunity & risk
-  "enable_domain9": true,   // own domain - legal / IP
-  "enable_domain1": false,  // Person A - organizational intelligence
-  "enable_domain4": false,  // Person A - document & knowledge intelligence
-  "enable_domain5": false,  // Person A - knowledge graph
+  "enable_market": true,            // own domain 7 - business & market intelligence
+  "enable_opportunity": true,       // own domain 8 - opportunity, risk & requirements
+  "enable_legal": true,             // own domain 9 - legal, regulatory & IP
+  "enable_org": false,              // Person A domain 1 - organizational intelligence
+  "enable_documents": false,        // Person A domain 3 - document & knowledge intelligence
+  "enable_knowledge_graph": false,  // Person A domain 4 - knowledge graph & relationships
   "signal_limit": 6
 }
 ```
+
+> **Flags are named for the capability, not a domain number.** They used to be
+> `enable_domain1/4/5/7/8/9`, which became misleading once the project was renumbered into ten
+> domains: old `domain4` meant Document & Knowledge while new "4" is Knowledge Graph, so a log line
+> would be misread by anyone holding the current map. The old names are still honoured by
+> `bus._flag()` during migration (the new name wins when both are present), and a test fails if a
+> legacy key reappears in the shipped config.
 
 Set a flag to `true` and the adapter activates **only if the package is importable**;
 otherwise it silently falls back. No restart-ordering problems.
@@ -62,7 +69,7 @@ relationships. A labelled demo payload exists behind `tools.allow_demo_data` (of
 
 **Consumer:** `ToolRegistry.search_documents()` (agents: `SUPERVISOR`, `MARKET_INTELLIGENCE`).
 Without Domain 4 the tool returns `documents: []` and `data_status: UNAVAILABLE`; the audit records
-`provider: unavailable:domain4`. Documents are evidence, so they are never invented.
+`provider: unavailable:documents`. Documents are evidence, so they are never invented.
 
 ---
 
@@ -117,8 +124,8 @@ provider** rather than a direct call.
       per-call timeout, so long-running crawls should be pre-computed or served from cache
 - [ ] Flag enabled in `orchestrator_config.json` → `tools.integration`
 - [ ] Verify: `.venv\Scripts\python -m pytest -v` still green, then check
-      `GET /audit/tools` on port 8000 — each record's `provider` should read `domain1` / `domain4`
-      / `domain5` / `domain2` and its `data_status` should be `LIVE`, rather than the
+      `GET /audit/tools` on port 8000 — each record's `provider` should read `org` / `documents`
+      / `knowledge_graph` / `osint` and its `data_status` should be `LIVE`, rather than the
       `unavailable:*` / `FAILED` values seen while the seam is absent
 
 ## Compatibility rules (important)

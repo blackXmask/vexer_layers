@@ -35,26 +35,57 @@ from typing import Any, Callable, Dict, List, Optional
 from vexer_platform.contracts import DataStatus
 
 __all__ = [
+    "DOMAIN_KEYS",
+    "LEGACY_KEY_ALIASES",
     "CircuitBreaker",
     "CircuitBreakers",
-    "DOMAIN_KEYS",
     "InMemoryAuditSink",
     "InMemoryCircuitBreakers",
     "ToolAuditRecord",
     "ToolBus",
+    "canonical_key",
 ]
 
-#: Downstream domain keys guarded by a breaker. A new integration seam must be added here
+#: Downstream dependency keys guarded by a breaker. A new integration seam must be added here
 #: deliberately, so it cannot end up uncallable-through-a-breaker by omission.
+#:
+#: These are **capability names, not domain numbers**, and that is deliberate. They used to be
+#: ``domain1``…``domain9`` under the pre-split numbering, which became actively misleading once the
+#: project was renumbered into ten domains: old ``domain4`` meant Document & Knowledge while new
+#: "4" means Knowledge Graph, and old ``domain5`` meant Knowledge Graph while new "5" means
+#: Evidence/Verification. A log line reading ``domain5`` would therefore be misread by anyone who had
+#: the current map open. Names do not drift when the org chart does.
+#:
+#: The name is the capability; the owning person and the canonical domain number are documented
+#: alongside it so the boundary stays explicit.
 DOMAIN_KEYS: tuple[str, ...] = (
-    "domain1",
-    "domain2",
-    "domain4",
-    "domain5",
-    "domain7",
-    "domain8",
-    "domain9",
+    "org",              # Person A · domain 1  Organizational Intelligence
+    "osint",            # Person A · domain 2  External Intelligence & OSINT
+    "documents",        # Person A · domain 3  Document & Knowledge Intelligence
+    "knowledge_graph",  # Person A · domain 4  Knowledge Graph & Relationship Intelligence
+    "market",           # Person B · domain 7  Business & Market Intelligence
+    "opportunity",      # Person B · domain 8  Opportunity, Risk & Requirements
+    "legal",            # Person B · domain 9  Legal, Regulatory & IP
 )
+
+#: Retired seam keys -> current key. Kept so an in-flight config or branch using the old names keeps
+#: working during the transition instead of failing closed with a silently disabled integration.
+#: Purely a migration aid: every internal call site uses the new names.
+LEGACY_KEY_ALIASES: Dict[str, str] = {
+    "domain1": "org",
+    "domain2": "osint",
+    "domain4": "documents",
+    "domain5": "knowledge_graph",
+    "domain7": "market",
+    "domain8": "opportunity",
+    "domain9": "legal",
+}
+
+
+def canonical_key(key: str) -> str:
+    """Map a possibly-legacy key onto its current name."""
+    return LEGACY_KEY_ALIASES.get(key, key)
+
 
 
 @dataclass(frozen=True)
@@ -424,55 +455,93 @@ _DEFAULT_TOOL_PERMISSIONS: Dict[str, List[str]] = {
 
 
 
-#: Domain key -> (feature flag, module, attribute) for the lazy integration seams.
-_DOMAIN_SPECS: Dict[str, "tuple[str, str, str]"] = {
-    "domain1": ("enable_domain1", "organizational_intelligence.service",
-                "OrganizationalIntelligenceService"),
-    "domain4": ("enable_domain4", "document_intelligence.service", "DocumentIntelligenceService"),
-    "domain5": ("enable_domain5", "knowledge_graph.service", "KnowledgeGraphService"),
+#: Capability key -> (feature flag, module, attribute) for Person A's optional seams.
+_SEAM_SPECS: Dict[str, "tuple[str, str, str]"] = {
+    "org": ("enable_org", "organizational_intelligence.service",
+            "OrganizationalIntelligenceService"),
+    "documents": ("enable_documents", "document_intelligence.service",
+                  "DocumentIntelligenceService"),
+    "knowledge_graph": ("enable_knowledge_graph", "knowledge_graph.service",
+                        "KnowledgeGraphService"),
 }
+
+#: Person B's own services, imported directly. Their flags default to enabled.
+_OWNED_FLAGS: Dict[str, str] = {
+    "market": "enable_market",
+    "opportunity": "enable_opportunity",
+    "legal": "enable_legal",
+}
+
+#: Old flag name -> new flag name, so a config written against the pre-split keys keeps working.
+#: A silently disabled integration is worse than a deprecation: an operator flipping a flag and
+#: seeing no effect would have no signal that the flag had been renamed.
+_LEGACY_FLAG_ALIASES: Dict[str, str] = {
+    "enable_domain1": "enable_org",
+    "enable_domain4": "enable_documents",
+    "enable_domain5": "enable_knowledge_graph",
+    "enable_domain7": "enable_market",
+    "enable_domain8": "enable_opportunity",
+    "enable_domain9": "enable_legal",
+}
+
+
+def _flag(integration: Dict[str, Any], name: str, default: bool) -> bool:
+    """
+    Read a feature flag, honouring its legacy name.
+
+    The new name wins when both are present, so migrating is a no-op once the config is updated.
+    """
+    if name in integration:
+        return bool(integration[name])
+    for old, new in _LEGACY_FLAG_ALIASES.items():
+        if new == name and old in integration:
+            return bool(integration[old])
+    return default
 
 
 def _default_service_resolver(key: str) -> Any:
     """
-    Resolve a downstream domain service by key.
+    Resolve a downstream service by capability key.
 
     Imports happen inside the function so that importing :mod:`bus` does not import every domain:
     that cost, and its failure modes, belong to first use. A missing package or a renamed class
-    yields ``None`` — the seam is optional by design, so Person A's domains can land at any time
+    yields ``None`` — the seams are optional by design, so Person A's domains can land at any time
     without breaking Domain 6.
     """
     import importlib
 
     from .config import load_config
 
+    key = canonical_key(key)
     integration = (load_config().get("tools", {}) or {}).get("integration", {}) or {}
-    spec = _DOMAIN_SPECS.get(key)
+
+    spec = _SEAM_SPECS.get(key)
     if spec is not None:
         flag, module_name, attribute = spec
-        if not integration.get(flag, False):
+        # Person A's seams are off unless explicitly enabled: an absent package must not turn into
+        # an import attempt on the hot path.
+        if not _flag(integration, flag, False):
             return None
         try:
             return getattr(importlib.import_module(module_name), attribute)()
         except (ImportError, AttributeError):
             return None
-    if key == "domain7":
-        if not integration.get("enable_domain7", True):
-            return None
-        from business_market_intelligence.service import MarketIntelligenceService
 
-        return MarketIntelligenceService()
-    if key == "domain8":
-        if not integration.get("enable_domain8", True):
+    if key in _OWNED_FLAGS:
+        if not _flag(integration, _OWNED_FLAGS[key], True):
             return None
-        from opportunity_risk_intelligence.service import OpportunityRiskService
+        if key == "market":
+            from business_market_intelligence.service import MarketIntelligenceService
 
-        return OpportunityRiskService()
-    if key == "domain9":
-        if not integration.get("enable_domain9", True):
-            return None
-        from legal_regulatory_ip_intelligence.service import LegalIntelligenceService
+            return MarketIntelligenceService()
+        if key == "opportunity":
+            from opportunity_risk_intelligence.service import OpportunityRiskService
 
-        return LegalIntelligenceService()
+            return OpportunityRiskService()
+        if key == "legal":
+            from legal_regulatory_ip_intelligence.service import LegalIntelligenceService
+
+            return LegalIntelligenceService()
     return None
+
 

@@ -21,12 +21,12 @@ Part of the **Vexer Enterprise Intelligence Platform**. Standalone module — co
 `agent_orchestrator/tools.py` lazily imports `OpportunityRiskService` and delegates `evaluate_rfp_fit()` to Domain 8. Toggle in `agent_orchestrator/orchestrator_config.json`:
 
 ```json
-"tools": { "integration": { "enable_domain8": true } }
+"tools": { "integration": { "enable_opportunity": true } }
 ```
 
 - Domain 8 unavailable or disabled → **automatic fallback** to Domain 6's built-in mock.
 - RBAC and audit logging always run **before** the integration call.
-- Audit records include `"provider": "domain8" | "builtin"`.
+- Audit records include `"provider": "opportunity" | "unavailable:opportunity"`.
 
 ## REST Endpoints (port 8002)
 

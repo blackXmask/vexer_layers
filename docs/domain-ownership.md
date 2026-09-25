@@ -42,24 +42,43 @@ shape and the tables; Person A defines the behaviour that fills them.
 service; domain 10 owns the write path, schema and migrations. Two people running DDL against one
 table is how the platform loses its audit guarantees.
 
-## 3. ⚠️ Collision 1 — "domain 4/5" now mean two different things
+## 3. ✅ Collision 1 — RESOLVED: seam keys are now capability names
 
 The renumbering changed what the numbers mean:
 
 * In this codebase the seam keys `domain1`…`domain9` used the **old** numbering, where 6 = Agents,
   7 = Market, 8 = Opportunity, 9 = Legal, and 1/2/4/5 were Person A's seams.
-* Under the **new** 10-domain map, Person A owns 1–5 where **3 = Document & Knowledge**,
-  **4 = Knowledge Graph**, **5 = Evidence/Verification**; Person B owns 6–10.
+* Under the **new** 10-domain map, Person A owns 1-5 where **3 = Document & Knowledge**,
+  **4 = Knowledge Graph**, **5 = Evidence/Verification**; Person B owns 6-10.
 
-Domains 6, 7, 8, 9 are unchanged, so those are safe. But the **seam keys in
-`agent_orchestrator/bus.py` are now ambiguous**: `bus.py`'s `"domain4"` means *Document & Knowledge*,
-while the new "domain 4" means *Knowledge Graph*. Anyone reading `domain5` in a log will reasonably
-conclude it is Evidence/Verification when it is actually Knowledge Graph.
+Old `domain4` meant *Document & Knowledge* while new "4" is *Knowledge Graph*, and old `domain5`
+meant *Knowledge Graph* while new "5" is *Evidence/Verification*. A log line reading `domain5` would
+therefore have been misread by anyone holding the current map.
 
-**Recommendation (not yet applied — it changes a config both teams read):** rename the seam keys to
-name what they are — `org`, `osint`, `documents`, `knowledge_graph` — and reserve bare numbers for
-the canonical map. Do this before Person A implements against these seams, or the first integration
-gets built on a misreading.
+**Applied fix — keys are named for the capability, not the number:**
+
+| Capability key | Old key | Owner | Canonical domain |
+|---|---|---|---|
+| `org` | `domain1` | Person A | 1 - Organizational Intelligence |
+| `osint` | `domain2` | Person A | 2 - External Intelligence & OSINT |
+| `documents` | `domain4` | Person A | 3 - Document & Knowledge Intelligence |
+| `knowledge_graph` | `domain5` | Person A | 4 - Knowledge Graph & Relationships |
+| `market` | `domain7` | Person B | 7 - Business & Market Intelligence |
+| `opportunity` | `domain8` | Person B | 8 - Opportunity, Risk & Requirements |
+| `legal` | `domain9` | Person B | 9 - Legal, Regulatory & IP |
+
+Config flags renamed to match (`enable_market`, `enable_documents`, `enable_knowledge_graph`, ...).
+Names do not drift when the org chart does.
+
+**Migration safety:** `bus.canonical_key()` maps retired key names, and `bus._flag()` honours a
+legacy `enable_domain*` flag when the new one is absent (the new name wins when both are present), so
+an in-flight branch or config does not silently lose an integration. Two tests lock this in: one
+fails if a number-based key reappears, and one fails if a legacy flag returns to the shipped config.
+
+**Deliberately not renamed:** `to_domain6_osint()` / `to_domain6_rfp_fit()` /
+`to_domain6_legal_check()` on the domain services. "Domain 6" is still AI Agents & Agent
+Orchestration under the new map, so those names remain accurate, and renaming a cross-package
+contract mapper would be churn with no clarity gain.
 
 ## 4. ⚠️ Collision 2 — evidence/confidence already exist on both sides
 

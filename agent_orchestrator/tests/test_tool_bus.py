@@ -18,11 +18,13 @@ import threading
 import pytest
 
 from agent_orchestrator.bus import (
+    DOMAIN_KEYS,
     CircuitBreaker,
     InMemoryAuditSink,
     InMemoryCircuitBreakers,
     ToolAuditRecord,
     ToolBus,
+    canonical_key,
 )
 from agent_orchestrator.tools import ToolRegistry
 from vexer_platform.contracts import DataStatus
@@ -176,16 +178,17 @@ def test_buses_do_not_share_state() -> None:
     """Two buses in one process are fully independent — the old module globals were not."""
     first = ToolBus.from_config({})
     second = ToolBus.from_config({})
-    first._breakers.breaker("domain7").record_failure()
+    first._breakers.breaker("market").record_failure()
     first.record(ToolAuditRecord(tool_name="t", caller_agent="A", arguments={}))
     assert second.audit_trail() == []
-    assert second._breakers.breaker("domain7").state == "closed"
+    assert second._breakers.breaker("market").state == "closed"
 
 
-def test_breaker_registry_covers_every_declared_domain() -> None:
+def test_breaker_registry_covers_every_declared_capability() -> None:
+    """Every declared seam has a breaker, so no dependency can fail unprotected by omission."""
     registry = InMemoryCircuitBreakers()
     snapshot = registry.snapshot()
-    for key in ("domain1", "domain2", "domain4", "domain5", "domain7", "domain8", "domain9"):
+    for key in DOMAIN_KEYS:
         assert snapshot[key] == "closed", f"{key} has no breaker and could fail unprotected"
 
 
@@ -194,7 +197,7 @@ def test_health_declares_state_distribution() -> None:
     health = ToolBus.from_config({}).health()
     assert health["breaker_distribution"] == "single-process"
     assert health["audit_distribution"] == "single-process"
-    assert set(health["breakers"]) >= {"domain7", "domain8", "domain9"}
+    assert set(health["breakers"]) >= {"market", "opportunity", "legal"}
 
 
 def test_health_reports_degraded_when_audit_truncated() -> None:
@@ -209,7 +212,7 @@ def test_health_reports_degraded_when_audit_truncated() -> None:
 def test_unresolvable_domain_is_reported_not_raised() -> None:
     """§34: a broken integration must not crash the bus."""
     bus = ToolBus.from_config({}, service_resolver=lambda key: (_ for _ in ()).throw(RuntimeError()))
-    assert bus.service("domain5") is None
+    assert bus.service("knowledge_graph") is None
 
 
 
@@ -244,6 +247,71 @@ def test_no_tool_invents_data_when_no_domain_is_available(no_domains) -> None:
     assert signals == []
     for result in (kg, docs, ctx, fit, legal):
         assert result["data_status"] in (DataStatus.UNAVAILABLE.value, DataStatus.FALLBACK.value)
+
+# -------------------------------------------------------------------------------------------
+# Seam naming: capability names, never domain numbers (§53 — cross-team boundary clarity)
+# -------------------------------------------------------------------------------------------
+
+
+def test_seam_keys_are_capability_names_not_domain_numbers() -> None:
+    """
+    Regression guard for the 10-domain renumbering.
+
+    The seams used to be keyed ``domain1``…``domain9``. After the split that became actively
+    misleading: old ``domain4`` meant Document & Knowledge while new "4" is Knowledge Graph, and old
+    ``domain5`` meant Knowledge Graph while new "5" is Evidence/Verification. A log line would be
+    misread by anyone holding the current map. Keys are now capability names, so they cannot drift
+    when the org chart does.
+    """
+    for key in DOMAIN_KEYS:
+        assert not key.startswith("domain"), f"seam key {key!r} is a domain number, not a capability"
+        assert not key[0].isdigit(), f"seam key {key!r} must not be a bare number"
+
+
+def test_legacy_keys_still_resolve() -> None:
+    """An in-flight branch or config using the old keys keeps working during migration."""
+    assert canonical_key("domain5") == "knowledge_graph"
+    assert canonical_key("domain7") == "market"
+    assert canonical_key("domain9") == "legal"
+    assert canonical_key("market") == "market", "current names must pass through unchanged"
+
+
+def test_legacy_config_flags_are_honoured_and_new_names_win() -> None:
+    """
+    A renamed flag that is simply ignored is worse than one that errors: an operator would flip it
+    and see no effect, with nothing telling them the name had moved.
+    """
+    from agent_orchestrator.bus import _flag
+
+    assert _flag({"enable_domain5": True}, "enable_knowledge_graph", False) is True
+    assert _flag({}, "enable_knowledge_graph", False) is False
+    assert _flag({}, "enable_market", True) is True, "Person B's own domains default to enabled"
+    # New name wins when both are present.
+    assert _flag(
+        {"enable_domain5": True, "enable_knowledge_graph": False},
+        "enable_knowledge_graph",
+        True,
+    ) is False
+
+
+def test_shipped_config_uses_capability_flags_only() -> None:
+    """
+    The committed config must not keep legacy keys: a lingering ``enable_domain5`` would be dead
+    weight, and worse, would keep the alias map alive after it was no longer needed.
+    """
+    import json
+    from pathlib import Path
+
+    config = json.loads(
+        (Path(__file__).resolve().parents[1] / "orchestrator_config.json").read_text("utf-8")
+    )
+    integration = config["tools"]["integration"]
+    for key in integration:
+        if key.startswith("enable_"):
+            assert not key.startswith("enable_domain"), f"legacy flag {key!r} still in config"
+    assert {"enable_market", "enable_opportunity", "enable_legal"} <= set(integration)
+    assert {"enable_org", "enable_documents", "enable_knowledge_graph"} <= set(integration)
+
 
 
 def test_compliance_is_never_cleared_without_a_real_assessment(no_domains) -> None:

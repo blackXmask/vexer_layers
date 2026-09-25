@@ -20,12 +20,12 @@ Part of the **Vexer Enterprise Intelligence Platform**. Standalone module — co
 `agent_orchestrator/tools.py` lazily imports `LegalIntelligenceService` and delegates `check_legal_compliance()` to Domain 9. Toggle in `agent_orchestrator/orchestrator_config.json`:
 
 ```json
-"tools": { "integration": { "enable_domain9": true } }
+"tools": { "integration": { "enable_legal": true } }
 ```
 
 - Domain 9 unavailable or disabled → **automatic fallback** to Domain 6's built-in mock.
 - RBAC and audit logging always run **before** the integration call.
-- Audit records include `"provider": "domain9" | "builtin"`.
+- Audit records include `"provider": "legal" | "unavailable:legal"`.
 
 ## REST Endpoints (port 8003)
 

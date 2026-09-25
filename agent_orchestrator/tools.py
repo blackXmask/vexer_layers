@@ -190,15 +190,15 @@ class ToolRegistry:
         if not cls._check_permission("query_knowledge_graph", caller_agent):
             raise cls._denied("query_knowledge_graph", caller_agent)
 
-        provider = "unavailable:domain5"
+        provider = "unavailable:knowledge_graph"
         data_status = DataStatus.UNAVAILABLE.value
         relationships: List[Dict[str, Any]] = []
         verified: List[Dict[str, Any]] = []
 
-        service = cls._service("domain5")
+        service = cls._service("knowledge_graph")
         if service is not None:
             payload, provider, data_status = cls._guarded(
-                "domain5", lambda: service.query_entity(entity_name)
+                "knowledge_graph", lambda: service.query_entity(entity_name)
             )
             if isinstance(payload, dict):
                 relationships = list(payload.get("relationships", []) or [])
@@ -207,7 +207,7 @@ class ToolRegistry:
                 relationships = list(payload)
         elif cls._demo_enabled():
             # Clearly-labelled local demo only; never reachable without an explicit opt-in.
-            provider = "demo:domain5"
+            provider = "demo:knowledge_graph"
             data_status = DataStatus.FALLBACK.value
             relationships = [
                 {"relation": "DEMO_RELATION", "target": "DEMO_ENTITY", "is_demo_data": True}
@@ -245,12 +245,12 @@ class ToolRegistry:
             raise cls._denied("search_documents", caller_agent)
 
         documents: List[Dict[str, Any]] = []
-        provider = "unavailable:domain4"
+        provider = "unavailable:documents"
         data_status = DataStatus.UNAVAILABLE.value
-        service = cls._service("domain4")
+        service = cls._service("documents")
         if service is not None:
             payload, provider, data_status = cls._guarded(
-                "domain4", lambda: service.search(query, limit=5)
+                "documents", lambda: service.search(query, limit=5)
             )
             if isinstance(payload, dict):
                 documents = list(payload.get("documents", []) or [])
@@ -287,12 +287,12 @@ class ToolRegistry:
             raise cls._denied("query_company_context", caller_agent)
 
         context: Dict[str, Any] = {}
-        provider = "unavailable:domain1"
+        provider = "unavailable:org"
         data_status = DataStatus.UNAVAILABLE.value
-        service = cls._service("domain1")
+        service = cls._service("org")
         if service is not None:
             payload, provider, data_status = cls._guarded(
-                "domain1", lambda: service.get_company_context(topic)
+                "org", lambda: service.get_company_context(topic)
             )
             if isinstance(payload, dict):
                 context = dict(payload)
@@ -350,13 +350,13 @@ class ToolRegistry:
         would treat them as measured. Removing them is a deliberate behaviour change (§41, §52).
         """
         integration = cls.get_bus().integration_settings()
-        service = cls._service("domain7")
+        service = cls._service("market")
         if service is None:
-            return [], "unavailable:domain7", DataStatus.UNAVAILABLE.value
+            return [], "unavailable:market", DataStatus.UNAVAILABLE.value
 
         limit = int(integration.get("signal_limit", 6))
         payload, provider, data_status = cls._guarded(
-            "domain7", lambda: [s.to_domain6_osint() for s in service.get_signals(topic, limit=limit)]
+            "market", lambda: [s.to_domain6_osint() for s in service.get_signals(topic, limit=limit)]
         )
         if data_status == DataStatus.LIVE.value and not payload:
             # The domain answered and found nothing. That is a real result, not a failure.
@@ -397,10 +397,10 @@ class ToolRegistry:
         and the previous implementation returned one. The recommendation is ``INSUFFICIENT_DATA``
         and the result is tagged ``FALLBACK`` so a consumer cannot mistake it for an assessment.
         """
-        service = cls._service("domain8")
+        service = cls._service("opportunity")
         if service is not None:
             payload, provider, data_status = cls._guarded(
-                "domain8", lambda: service.assess(rfp_title, mandatory_reqs).to_domain6_rfp_fit()
+                "opportunity", lambda: service.assess(rfp_title, mandatory_reqs).to_domain6_rfp_fit()
             )
             if data_status == DataStatus.LIVE.value and isinstance(payload, dict):
                 return dict(payload), provider, data_status
@@ -422,7 +422,7 @@ class ToolRegistry:
             "capability_gaps": gaps,
             "recommendation": "INSUFFICIENT_DATA",
             "recommendation_basis": "keyword-overlap heuristic; no Domain 8 assessment available",
-        }, "heuristic:domain8-unavailable", DataStatus.FALLBACK.value
+        }, "heuristic:opportunity-unavailable", DataStatus.FALLBACK.value
 
     @classmethod
     def check_legal_compliance(cls, scope_text: str, caller_agent: str = "LEGAL_REGULATORY") -> Dict[str, Any]:
@@ -457,10 +457,10 @@ class ToolRegistry:
         ``["EU AI Act", "GDPR", "NIST CSF"]`` as *detected* regulations — asserting facts nobody
         checked.
         """
-        service = cls._service("domain9")
+        service = cls._service("legal")
         if service is not None:
             payload, provider, data_status = cls._guarded(
-                "domain9", lambda: service.analyze(scope_text).to_domain6_legal_check()
+                "legal", lambda: service.analyze(scope_text).to_domain6_legal_check()
             )
             if data_status == DataStatus.LIVE.value and isinstance(payload, dict):
                 return dict(payload), provider, data_status
@@ -492,5 +492,5 @@ class ToolRegistry:
             "compliance_flags": flags,
             "requires_human_signoff": True,
             "status_reason": "no Domain 9 assessment available; clearance cannot be asserted",
-        }, "heuristic:domain9-unavailable", DataStatus.FALLBACK.value
+        }, "heuristic:legal-unavailable", DataStatus.FALLBACK.value
 

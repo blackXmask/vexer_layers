@@ -137,14 +137,15 @@
     "allow_demo_data": false,
     "allow_demo_data_note": "Increment 3 removed the fabricated fallbacks (invented relationships, tenders, regulations and credibility scores). This flag gates a small, clearly-labelled demo payload used only for local demonstrations. It is false by default and must stay false in any deployed environment: a demo record is not evidence, and evidence-shaped fabrications are exactly what this platform exists to prevent (mandate 41, 52).",
     "integration": {
-      "enable_domain7": true,
-      "enable_domain8": true,
-      "enable_domain9": true,
-      "enable_domain1": false,
-      "enable_domain4": false,
-      "enable_domain5": false,
+      "enable_market": true,
+      "enable_opportunity": true,
+      "enable_legal": true,
+      "enable_org": false,
+      "enable_documents": false,
+      "enable_knowledge_graph": false,
       "signal_limit": 6,
-      "_comment": "D7/D8/D9 are Person B's own domains. D1/D4/D5 are Person A seams - flip to true once those packages exist; contracts in INTEGRATION.md."
+      "_comment": "Flags are named for the CAPABILITY, not a domain number. Under the 10-domain map: enable_market=Person B domain 7, enable_opportunity=domain 8, enable_legal=domain 9, enable_org=Person A domain 1, enable_documents=Person A domain 3, enable_knowledge_graph=Person A domain 4. Person A's seams are off until those packages exist; contracts in INTEGRATION.md and docs/domain-ownership.md.",
+      "_legacy_keys": "The pre-split names enable_domain1/4/5/7/8/9 are still honoured by bus._flag() during migration; the new name wins when both are present. Update this file and drop the aliases once no branch uses the old keys."
     },
     "circuit_breaker": {
       "failure_threshold": 3,

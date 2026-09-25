@@ -199,7 +199,7 @@ def test_domain6_toolregistry_integration():
 
     audit = ToolRegistry.get_audit_trail()
     assert audit[0].tool_name == "check_legal_compliance"
-    assert audit[0].arguments.get("provider") == "domain9"
+    assert audit[0].arguments.get("provider") == "legal"
 
     # RBAC still enforced before any integration call happens
     with pytest.raises(PermissionError):

@@ -5,27 +5,33 @@ Every domain is config-driven, deterministic, runs fully offline, and is LLM-rea
 
 ---
 
-## 50/50 Ownership Split
+## 50/50 Ownership Split — 10 domains
 
 | # | Domain | Owner | Status |
 |---|---|---|---|
-| 1 | Organizational Intelligence | **Person A** | ⬜ not started |
-| 2 | External Intelligence & OSINT | **Person A** | 🔌 seam ready (see `INTEGRATION.md`) |
-| 3 | AI Agents & Agent Orchestration | **Person B** | ✅ complete |
-| 4 | Document & Knowledge Intelligence | **Person A** | 🔌 seam ready (see `INTEGRATION.md`) |
-| 5 | Knowledge Graph & Relationship Intelligence | **Person A** | 🔌 seam ready (see `INTEGRATION.md`) |
-| 6 | Evidence, Verification & Intelligence Analysis | **Person A** | ⬜ not started |
-| 7 | Business & Market Intelligence | **Person B** | ✅ complete |
-| 8 | Opportunity, Risk & Requirements Intelligence | **Person B** | ✅ complete |
-| 9 | Legal, Regulatory & Intellectual Property Intelligence | **Person B** | ✅ complete |
-| 10 | Enterprise Platform, Security & Governance | **Person B** | 🟡 partial (inside Domain 6) |
+| 1 | Organizational Intelligence | **Person A** | 🔌 seam ready (`enable_org`, see `INTEGRATION.md`) |
+| 2 | External Intelligence & OSINT | **Person A** | 🔌 seam ready (D7 `set_external_provider`) |
+| 3 | Document & Knowledge Intelligence | **Person A** | 🔌 seam ready (`enable_documents`, see `INTEGRATION.md`) |
+| 4 | Knowledge Graph & Relationship Intelligence | **Person A** | 🔌 seam ready (`enable_knowledge_graph`) |
+| 5 | Evidence, Verification & Intelligence Analysis | **Person A** | ⬜ not started — **boundary to settle, see `docs/domain-ownership.md` §4** |
+| 6 | AI Agents & Agent Orchestration | **Person B** | ✅ working (P7 complete) |
+| 7 | Business & Market Intelligence | **Person B** | ✅ working on static sources |
+| 8 | Opportunity, Risk & Requirements Intelligence | **Person B** | ✅ working on rule-based analysis |
+| 9 | Legal, Regulatory & Intellectual Property Intelligence | **Person B** | ✅ working on static regulation catalog |
+| 10 | Enterprise Platform, Security & Governance | **Person B** | 🟡 partial — contracts, persistence, audit, HITL done; event pipeline, identity, observability missing |
+
+**`vexer_platform/` is domain 10's code and a shared dependency of all ten domains.** It owns the
+contracts and storage; Person A's domains own the intelligence that fills them. The full boundary
+analysis, the contract/intelligence split, and the one open collision are in
+**`docs/domain-ownership.md`**.
 
 | Folder | Domain | Port |
 |---|---|---|
-| `agent_orchestrator/` | AI Agents & Agent Orchestration | 8000 |
-| `business_market_intelligence/` | Business & Market Intelligence | 8001 |
-| `opportunity_risk_intelligence/` | Opportunity, Risk & Requirements Intelligence | 8002 |
-| `legal_regulatory_ip_intelligence/` | Legal, Regulatory & IP Intelligence | 8003 |
+| `agent_orchestrator/` | 6 — AI Agents & Agent Orchestration | 8000 |
+| `business_market_intelligence/` | 7 — Business & Market Intelligence | 8001 |
+| `opportunity_risk_intelligence/` | 8 — Opportunity, Risk & Requirements | 8002 |
+| `legal_regulatory_ip_intelligence/` | 9 — Legal, Regulatory & IP | 8003 |
+| `vexer_platform/` | 10 — Platform, Security & Governance | library |
 
 ---
 
@@ -77,11 +83,12 @@ Interactive docs: `http://127.0.0.1:800{0,1,2,3}/docs`
         ▲ optional: D2 OSINT        ▲ D1 company context     ▲ D4 documents
 ```
 
-Every domain call is: **RBAC check → circuit breaker → lazy import → result → audit record**,
-with a built-in mock fallback if the domain is missing, disabled, or failing.
+Every domain call is: **RBAC check → circuit breaker → lazy import → result → audit record**. A
+missing, disabled or failing domain yields an **empty result tagged with its `data_status`**
+(`LIVE`/`DEGRADED`/`STALE`/`FALLBACK`/`FAILED`/`UNAVAILABLE`) — never invented data.
 
-Person A's domains (1, 2, 4, 5) plug in through the same adapter pattern — contracts are
-documented in **`INTEGRATION.md`**.
+Person A's domains (1, 2, 3, 4) plug in through the same adapter pattern — contracts are documented
+in **`INTEGRATION.md`**, and the capability-key naming is in **`docs/domain-ownership.md`**.
 
 ---
 

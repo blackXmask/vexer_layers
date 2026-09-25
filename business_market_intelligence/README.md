@@ -16,12 +16,12 @@ Part of the **Vexer Enterprise Intelligence Platform**. Standalone module — co
 `agent_orchestrator/tools.py` lazily imports `MarketIntelligenceService` and delegates `query_osint_signals()` to Domain 7. Toggle in `agent_orchestrator/orchestrator_config.json`:
 
 ```json
-"tools": { "integration": { "enable_domain7": true, "signal_limit": 6 } }
+"tools": { "integration": { "enable_market": true, "signal_limit": 6 } }
 ```
 
 - Domain 7 unavailable or disabled → **automatic fallback** to Domain 6's built-in mock.
 - RBAC and audit logging always run **before** the integration call.
-- Audit records include `"provider": "domain7" | "builtin"`.
+- Audit records include `"provider": "market" | "unavailable:market"`.
 
 ## REST Endpoints (port 8001)
 
