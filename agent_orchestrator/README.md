@@ -18,9 +18,10 @@ Domain 6 serves as the core reasoning, planning, and execution engine of Vexer:
 | Control | Where | Behaviour |
 |---|---|---|
 | **Fail-closed governance** | `orchestrator.py` synthesis | If any agent task FAILS, the workflow **never auto-approves** — risk escalates to `risk_level_on_task_failure` (HIGH) and the HITL gate is forced. Config: `orchestrator.fail_closed_on_task_failure` |
-| **Failure isolation** | `tools.py` `_fetch_*` | A crashing domain never breaks a workflow — the built-in mock is served and the audit records `provider: builtin-fallback` |
-| **Circuit breaker** | `tools.py` `_CircuitBreaker` | Opens after `failure_threshold` consecutive domain failures, then short-circuits (`provider: builtin-circuit-open`) for `recovery_seconds`. Config: `tools.circuit_breaker` |
-| **Bounded audit log** | `tools.py` `_BoundedAuditList` | In-memory audit trail capped at `tools.audit.max_records` (default 1000), oldest trimmed first — no unbounded memory growth |
+| **Failure isolation** | `bus.py` `ToolBus.guarded` | A crashing domain never breaks a workflow. The call returns empty with `data_status: FAILED` and the audit records the reason — it is never replaced by invented data |
+| **Circuit breaker** | `bus.py` `CircuitBreaker` | Thread-safe. Opens after `failure_threshold` consecutive failures, admits exactly one probe per `recovery_seconds` window, and uses a monotonic clock so an NTP step cannot wedge it. Config: `tools.circuit_breaker` |
+| **Bounded audit log** | `bus.py` `InMemoryAuditSink` | Capped at `tools.audit.max_records` (default 1000), oldest trimmed first. Truncation is **counted** and surfaced as `data_status: DEGRADED`, so a partial trail never reads as complete |
+| **Provenance on every result** | `bus.py`, `tools.py` | Each tool result and audit record carries `provider` + `data_status` (`LIVE`/`DEGRADED`/`STALE`/`FALLBACK`/`FAILED`/`UNAVAILABLE`), so a fallback is never indistinguishable from live intelligence |
 | **API-key auth** | `auth.py` | Optional `X-API-Key` on every route except `/health`. Enable: `api.auth.enabled = true` + key (or env var) |
 | **Input validation** | `api.py` | Pydantic bounds on query/session/feedback length; oversized or malformed input rejected with `422` before any work runs |
 | **Checkpoint safety** | `models.py` (each domain) | Contract mappers emit JSON-safe values (`model_dump(mode="json")`) so state stays serializable under strict msgpack mode |

@@ -35,6 +35,7 @@ __all__ = [
     "Claim",
     "CausalLink",
     "Confidence",
+    "DataStatus",
     "Entity",
     "Event",
     "Evidence",
@@ -125,6 +126,31 @@ class SignalType(str, Enum):
     ANOMALY = "ANOMALY"
     TREND = "TREND"
     CONTRADICTION = "CONTRADICTION"
+
+
+class DataStatus(str, Enum):
+    """
+    Explicit data-freshness / health states (mandate §19).
+
+    Every component that can degrade must say *which* of these it is serving. The rule the whole
+    platform exists to enforce: a fallback must never be indistinguishable from live intelligence.
+    Defined here — in the contracts module — because D6's tool bus and the persistence layer both
+    need one definition; a second copy would be a second, drifting vocabulary.
+
+    ``LIVE``        real source, current data
+    ``DEGRADED``    reachable but impaired (slow, partial, replication lag)
+    ``STALE``       serving data older than the freshness budget
+    ``FALLBACK``    a documented alternate path produced this result (e.g. AGE → recursive CTE)
+    ``FAILED``      the last operation failed; state is unknown
+    ``UNAVAILABLE`` the source could not be reached at all
+    """
+
+    LIVE = "LIVE"
+    DEGRADED = "DEGRADED"
+    STALE = "STALE"
+    FALLBACK = "FALLBACK"
+    FAILED = "FAILED"
+    UNAVAILABLE = "UNAVAILABLE"
 
 
 class Severity(str, Enum):

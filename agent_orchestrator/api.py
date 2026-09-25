@@ -69,8 +69,20 @@ def health_check():
 
 @app.get("/audit/tools", dependencies=[Depends(require_api_key)])
 def get_tool_audit_trail():
-    """Returns telemetry and RBAC audit records of all tool calls made by agents."""
-    return [rec.model_dump() for rec in ToolRegistry.get_audit_trail()]
+    """
+    Telemetry and RBAC audit records for tool calls made by agents.
+
+    Each record carries ``provider`` and ``data_status`` so a consumer can tell a live answer from a
+    degraded or absent one. The response also states the audit backend's ``distribution``: a
+    ``single-process`` audit trail is a per-worker fragment, and saying so is better than letting a
+    reader assume it is cluster-wide (§19, §28).
+    """
+    records = [rec.to_dict() for rec in ToolRegistry.get_audit_trail()]
+    return {
+        "records": records,
+        "count": len(records),
+        "bus": ToolRegistry.bus_health(),
+    }
 
 
 @app.post("/workflows/start", response_model=WorkflowResponse, dependencies=[Depends(require_api_key)])

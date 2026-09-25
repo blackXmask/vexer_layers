@@ -47,7 +47,8 @@ otherwise it silently falls back. No restart-ordering problems.
 | *(optional)* `get_neighbors` | `(entity_name: str, depth: int = 1) -> list[dict]` | list of neighbour dicts |
 
 **Consumer:** `ToolRegistry.query_knowledge_graph()` (agent: `MARKET_INTELLIGENCE`).
-Fallback today: static relationship mock in `tools.py`.
+Without Domain 5 the tool returns `relationships: []` and `data_status: UNAVAILABLE` — never invented
+relationships. A labelled demo payload exists behind `tools.allow_demo_data` (off by default).
 
 ---
 
@@ -60,7 +61,8 @@ Fallback today: static relationship mock in `tools.py`.
 | `search` | `(query: str, limit: int = 5) -> dict` | `{"documents": [{"title": str, "snippet": str, "source": str, "score": float}]}` |
 
 **Consumer:** `ToolRegistry.search_documents()` (agents: `SUPERVISOR`, `MARKET_INTELLIGENCE`).
-Fallback today: empty-result stub — agents continue normally, audit records `builtin-fallback`.
+Without Domain 4 the tool returns `documents: []` and `data_status: UNAVAILABLE`; the audit records
+`provider: unavailable:domain4`. Documents are evidence, so they are never invented.
 
 ---
 
@@ -115,8 +117,9 @@ provider** rather than a direct call.
       per-call timeout, so long-running crawls should be pre-computed or served from cache
 - [ ] Flag enabled in `orchestrator_config.json` → `tools.integration`
 - [ ] Verify: `.venv\Scripts\python -m pytest -v` still green, then check
-      `GET /audit/tools` on port 8000 — `arguments.provider` should read `domain1` / `domain4`
-      / `domain5` / `domain2` instead of `builtin*`
+      `GET /audit/tools` on port 8000 — each record's `provider` should read `domain1` / `domain4`
+      / `domain5` / `domain2` and its `data_status` should be `LIVE`, rather than the
+      `unavailable:*` / `FAILED` values seen while the seam is absent
 
 ## Compatibility rules (important)
 

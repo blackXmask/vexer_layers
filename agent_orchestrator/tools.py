@@ -1,424 +1,417 @@
 """
 Enterprise Tool Registry with RBAC, Tool Execution Audit Logging, and Structured Validation.
-Enforces permissions and sandboxing before invoking external knowledge and OSINT sources.
+
+Thin, backwards-compatible facade over :mod:`agent_orchestrator.bus`. Every classmethod delegates to
+a :class:`~agent_orchestrator.bus.ToolBus` that owns the breakers, the audit sink and the RBAC
+policy.
+
+**What changed in P7, and why** (three real defects, not stylistic preferences):
+
+1. **No import-time configuration.** The breaker registry, the RBAC map and the audit cap were
+   evaluated when this module was first imported, so ``VEXER_CONFIG_PATH`` and test config swaps had
+   no effect without a process restart, and a broken config file crashed at *import*. The default bus
+   is now built lazily on first use and owns its config.
+2. **State is instance-owned and injectable.** The module-level ``_BREAKERS`` dict and class-level
+   ``_audit_log`` were shared by every caller *and* every worker process, so a horizontally scaled
+   deployment had one circuit breaker per process and an audit trail that was only a fragment.
+   :class:`ToolBus` owns its state, reports the backend's ``distribution`` in :meth:`bus_health`, and
+   accepts a Postgres-backed sink/registry once the deployment outgrows one node.
+3. **Every result declares its provenance.** Each tool returns a ``data_status`` from the shared
+   :class:`~vexer_platform.contracts.DataStatus` vocabulary (§19), so a degraded or absent source
+   can never be mistaken for live intelligence.
+
+**Fabricated intelligence was removed.** The fallbacks used to invent records — relationships,
+tenders, competitor names — with hardcoded credibility scores. Inventing analysis and presenting it
+as intelligence is the exact failure this platform exists to prevent (§41, §52), so the default path
+returns an empty result tagged ``UNAVAILABLE``. A clearly-labelled demo payload remains available
+behind ``tools.allow_demo_data`` for local demonstrations only.
 """
 from typing import Any, Dict, List, Optional
-from pydantic import BaseModel, Field
-import importlib
 import time
 
-from .config import load_config
+from vexer_platform.contracts import DataStatus
 
+from .bus import ToolAuditRecord, ToolBus
 
-class _BoundedAuditList(list):
-    """Audit trail with a configurable cap so long-running servers cannot leak memory."""
+#: Backwards-compatible alias. The record type moved to :mod:`agent_orchestrator.bus` and gained
+#: ``provider`` / ``data_status``; the old name is kept so existing imports keep working.
+ToolCallAuditRecord = ToolAuditRecord
 
-    def __init__(self, maxlen: int = 1000):
-        super().__init__()
-        self.maxlen = maxlen
-
-    def append(self, item) -> None:
-        super().append(item)
-        if self.maxlen > 0 and len(self) > self.maxlen:
-            del self[: len(self) - self.maxlen]
-
-
-class _CircuitBreaker:
-    """Minimal circuit breaker for downstream domain services.
-
-    Opens after `failure_threshold` consecutive failures and stays open for
-    `recovery_seconds`, then half-opens to allow a single probe request.
-    """
-
-    def __init__(self, failure_threshold: int = 3, recovery_seconds: float = 30.0):
-        self.failure_threshold = max(int(failure_threshold), 1)
-        self.recovery_seconds = float(recovery_seconds)
-        self.failures = 0
-        self.opened_at: Optional[float] = None
-
-    def is_open(self) -> bool:
-        if self.opened_at is None:
-            return False
-        if time.time() - self.opened_at >= self.recovery_seconds:
-            self.opened_at = None  # half-open: allow one probe
-            self.failures = 0
-            return False
-        return True
-
-    def record_success(self) -> None:
-        self.failures = 0
-        self.opened_at = None
-
-    def record_failure(self) -> None:
-        self.failures += 1
-        if self.failures >= self.failure_threshold and self.opened_at is None:
-            self.opened_at = time.time()
-
-
-_CB_CFG = load_config().get("tools", {}).get("circuit_breaker", {})
-_BREAKERS: Dict[str, _CircuitBreaker] = {
-    key: _CircuitBreaker(
-        failure_threshold=int(_CB_CFG.get("failure_threshold", 3)),
-        recovery_seconds=float(_CB_CFG.get("recovery_seconds", 30))
-    )
-    for key in ("domain1", "domain2", "domain4", "domain5", "domain7", "domain8", "domain9")
-}
-
-
-class ToolCallAuditRecord(BaseModel):
-    tool_name: str
-    caller_agent: str
-    arguments: Dict[str, Any]
-    timestamp: float = Field(default_factory=time.time)
-    execution_time_ms: float = 0.0
-    status: str = "SUCCESS"  # SUCCESS, PERMISSION_DENIED, FAILED
-    error_message: Optional[str] = None
+__all__ = ["ToolCallAuditRecord", "ToolRegistry"]
 
 
 class ToolRegistry:
-    """Enterprise Tool Registry enforcing sandboxing, RBAC, and execution telemetry."""
+    """
+    Enterprise Tool Registry enforcing sandboxing, RBAC, and execution telemetry.
 
-    # Fallback RBAC map (used only if tools.permissions is absent from config)
-    _DEFAULT_TOOL_PERMISSIONS = {
-        "query_knowledge_graph": ["SUPERVISOR", "MARKET_INTELLIGENCE", "OPPORTUNITY_RISK"],
-        "query_osint_signals": ["SUPERVISOR", "MARKET_INTELLIGENCE"],
-        "evaluate_rfp_fit": ["SUPERVISOR", "OPPORTUNITY_RISK"],
-        "check_legal_compliance": ["SUPERVISOR", "LEGAL_REGULATORY"],
-        # Person A seams (see INTEGRATION.md)
-        "search_documents": ["SUPERVISOR", "MARKET_INTELLIGENCE", "OPPORTUNITY_RISK"],
-        "query_company_context": ["SUPERVISOR", "MARKET_INTELLIGENCE", "OPPORTUNITY_RISK"],
-    }
+    The classmethods remain for historical API compatibility. They hold no state themselves: state
+    lives in the bus returned by :meth:`get_bus`, created on first use and replaceable via
+    :meth:`set_bus` — the seam a worker, a test, or a multi-tenant deployment uses to obtain an
+    isolated bus.
+    """
 
-    TOOL_PERMISSIONS = {
-        **_DEFAULT_TOOL_PERMISSIONS,
-        **load_config().get("tools", {}).get("permissions", {})
-    }
+    _bus: Optional[ToolBus] = None
 
-    _audit_log: List[ToolCallAuditRecord] = _BoundedAuditList(
-        maxlen=int(load_config().get("tools", {}).get("audit", {}).get("max_records", 1000))
-    )
+    # -- bus lifecycle ----------------------------------------------------------------------------
+
+    @classmethod
+    def get_bus(cls) -> ToolBus:
+        """
+        The default bus, built lazily.
+
+        Deliberately lazy: building it at import time is precisely the defect this refactor removed,
+        because it would freeze configuration into module import.
+        """
+        if cls._bus is None:
+            cls._bus = ToolBus.from_config()
+        return cls._bus
+
+    @classmethod
+    def set_bus(cls, bus: Optional[ToolBus]) -> None:
+        """
+        Replace the default bus (dependency injection).
+
+        ``None`` resets to lazy construction. Tests use this for isolation; a worker that owns a
+        shared (Postgres-backed) bus injects it at startup.
+        """
+        cls._bus = bus
+
+    @classmethod
+    def bus_health(cls) -> Dict[str, Any]:
+        """Runtime health, including whether breaker/audit state is per-process or shared (§28)."""
+        return cls.get_bus().health()
+
+
+
+    # -- audit ------------------------------------------------------------------------------------
 
     @classmethod
     def get_audit_trail(cls) -> List[ToolCallAuditRecord]:
-        return list(cls._audit_log)
+        return cls.get_bus().audit_trail()
 
     @classmethod
-    def clear_audit_trail(cls):
-        cls._audit_log.clear()
+    def clear_audit_trail(cls) -> None:
+        cls.get_bus().clear_audit_trail()
 
     @classmethod
     def _check_permission(cls, tool_name: str, caller_agent: str) -> bool:
-        allowed = cls.TOOL_PERMISSIONS.get(tool_name, [])
-        return caller_agent in allowed
-
+        return cls.get_bus().check_permission(tool_name, caller_agent)
 
     @classmethod
-    def _optional_domain_service(cls, flag: str, module: str, attribute: str):
-        """Lazy adapter for an optional Person A domain (see INTEGRATION.md).
+    def _audit(
+        cls,
+        *,
+        tool_name: str,
+        caller_agent: str,
+        arguments: Dict[str, Any],
+        provider: str = "unknown",
+        data_status: str = DataStatus.UNAVAILABLE.value,
+        status: str = "SUCCESS",
+        error_message: Optional[str] = None,
+        t0: Optional[float] = None,
+    ) -> None:
+        """Record one audited call through the bus (never raises)."""
+        cls.get_bus().record(
+            ToolCallAuditRecord(
+                tool_name=tool_name,
+                caller_agent=caller_agent,
+                arguments=arguments,
+                status=status,
+                provider=provider,
+                data_status=data_status,
+                error_message=error_message,
+                execution_time_ms=((time.time() - t0) * 1000) if t0 is not None else 0.0,
+            )
+        )
 
-        Returns None when the feature flag is off, the package is missing, or the
-        class name differs - so Person A can land their domain at any time without
-        breaking Domain 6. Duck-typed: only the documented method signature matters.
+    @classmethod
+    def _denied(cls, tool_name: str, caller_agent: str) -> "PermissionError":
         """
-        integration = load_config().get("tools", {}).get("integration", {})
-        if not integration.get(flag, False):
-            return None
-        try:
-            return getattr(importlib.import_module(module), attribute)()
-        except (ImportError, AttributeError):
-            return None
+        Build an RBAC rejection: audit it, then raise.
 
-    @classmethod
-    def _domain1_service(cls):
-        """Domain 1 - Organizational Intelligence (Person A)."""
-        return cls._optional_domain_service(
-            "enable_domain1", "organizational_intelligence.service", "OrganizationalIntelligenceService"
-        )
-
-    @classmethod
-    def _domain4_service(cls):
-        """Domain 4 - Document & Knowledge Intelligence (Person A)."""
-        return cls._optional_domain_service(
-            "enable_domain4", "document_intelligence.service", "DocumentIntelligenceService"
-        )
-
-    @classmethod
-    def _domain5_service(cls):
-        """Domain 5 - Knowledge Graph & Relationship Intelligence (Person A)."""
-        return cls._optional_domain_service(
-            "enable_domain5", "knowledge_graph.service", "KnowledgeGraphService"
-        )
-
-    @classmethod
-    def _guarded(cls, key: str, call) -> "tuple[Any, str]":
-        """Runs a domain call under its circuit breaker. Returns (result, provider).
-
-        provider is the domain key on success, or a builtin-* marker when the domain
-        is open/failed/returned nothing. Never raises.
+        Auditing *before* raising matters — a denied call is exactly the event a reviewer needs to
+        see, and raising first would lose it.
         """
-        breaker = _BREAKERS[key]
-        if breaker.is_open():
-            return None, "builtin-circuit-open"
-        try:
-            result = call()
-            breaker.record_success()
-            return result, key
-        except Exception:
-            breaker.record_failure()
-            return None, "builtin-fallback"
+        message = f"Agent {caller_agent} lacks permission for {tool_name}"
+        cls._audit(
+            tool_name=tool_name,
+            caller_agent=caller_agent,
+            arguments={"caller_agent": caller_agent},
+            status="PERMISSION_DENIED",
+            error_message=message,
+        )
+        return PermissionError(message)
 
     @classmethod
-    def query_knowledge_graph(cls, entity_name: str, caller_agent: str = "MARKET_INTELLIGENCE") -> Dict[str, Any]:
-        """Queries Person A's Knowledge Graph (Domain 4 & 5)."""
+    def _demo_enabled(cls) -> bool:
+        """
+        Whether the labelled demo payload is permitted (§41).
+
+        Off by default. It exists so a local demonstration has something to render, and it must
+        never be reachable implicitly: an operator can switch it on, nothing turns it on for them.
+        """
+        from .config import load_config
+
+        return bool((load_config().get("tools", {}) or {}).get("allow_demo_data", False))
+
+
+    # -- downstream services ----------------------------------------------------------------------
+
+    @classmethod
+    def _service(cls, key: str) -> Any:
+        """
+        Resolve a downstream domain service through the bus.
+
+        All domain lookup (feature flags, lazy import, optional-package tolerance) now lives in one
+        place, :func:`agent_orchestrator.bus._default_service_resolver`, so four near-identical
+        adapters in this class collapsed into a single lookup and the seams cannot drift apart.
+        """
+        return cls.get_bus().service(key)
+
+    @classmethod
+    def _guarded(cls, key: str, call) -> "tuple[Any, str, str]":
+        """Run a downstream call under its breaker via the bus. Never raises."""
+        return cls.get_bus().guarded(key, call)
+
+    @classmethod
+    def query_knowledge_graph(
+        cls, entity_name: str, caller_agent: str = "MARKET_INTELLIGENCE"
+    ) -> Dict[str, Any]:
+        """
+        Knowledge-graph relationships for an entity (Person A Domain 5).
+
+        When Domain 5 is absent the result is **empty and tagged** ``UNAVAILABLE`` rather than
+        populated with invented relationships. The previous implementation returned a fixed set of
+        relationships and "verified facts" with hardcoded confidence scores (0.96, 0.91) for any
+        entity name at all — fabricated intelligence that looked identical to a real answer, which
+        is precisely what §41 and §52 forbid. Callers can see the difference in ``data_status``.
+        """
         t0 = time.time()
         if not cls._check_permission("query_knowledge_graph", caller_agent):
-            rec = ToolCallAuditRecord(
-                tool_name="query_knowledge_graph",
-                caller_agent=caller_agent,
-                arguments={"entity_name": entity_name},
-                status="PERMISSION_DENIED",
-                error_message=f"Agent {caller_agent} lacks permission for query_knowledge_graph"
-            )
-            cls._audit_log.append(rec)
-            raise PermissionError(rec.error_message)
+            raise cls._denied("query_knowledge_graph", caller_agent)
 
-        result = None
-        provider = "builtin"
-        service = cls._domain5_service()
+        provider = "unavailable:domain5"
+        data_status = DataStatus.UNAVAILABLE.value
+        relationships: List[Dict[str, Any]] = []
+        verified: List[Dict[str, Any]] = []
+
+        service = cls._service("domain5")
         if service is not None:
-            payload, provider = cls._guarded("domain5", lambda: service.query_entity(entity_name))
-            if payload:
-                result = payload
-
-        result = result or {
-            "entity": entity_name,
-            "relationships": [
-                {"relation": "OPERATES_IN", "target": "Cloud Security"},
-                {"relation": "COMPETES_WITH", "target": "CompetitorCorp"},
-                {"relation": "HOLDS_CERTIFICATION", "target": "ISO27001"},
-                {"relation": "DATA_SOVEREIGNTY_REGION", "target": "EU-Frankfurt"}
-            ],
-            "verified_facts": [
-                {"fact": f"{entity_name} specializes in enterprise intelligence & autonomous workflows.", "confidence": 0.96},
-                {"fact": f"{entity_name} has active bids in EU and US markets.", "confidence": 0.91}
+            payload, provider, data_status = cls._guarded(
+                "domain5", lambda: service.query_entity(entity_name)
+            )
+            if isinstance(payload, dict):
+                relationships = list(payload.get("relationships", []) or [])
+                verified = list(payload.get("verified_facts", []) or [])
+            elif isinstance(payload, list):
+                relationships = list(payload)
+        elif cls._demo_enabled():
+            # Clearly-labelled local demo only; never reachable without an explicit opt-in.
+            provider = "demo:domain5"
+            data_status = DataStatus.FALLBACK.value
+            relationships = [
+                {"relation": "DEMO_RELATION", "target": "DEMO_ENTITY", "is_demo_data": True}
             ]
+
+        result = {
+            "entity": entity_name,
+            "relationships": relationships,
+            "verified_facts": verified,
+            "provider": provider,
+            "data_status": data_status,
         }
-        cls._audit_log.append(ToolCallAuditRecord(
+        cls._audit(
             tool_name="query_knowledge_graph",
             caller_agent=caller_agent,
-            arguments={"entity_name": entity_name, "provider": provider},
-            execution_time_ms=(time.time() - t0) * 1000
-        ))
+            arguments={"entity_name": entity_name, "provider": provider,
+                       "relationships": len(relationships)},
+            provider=provider,
+            data_status=data_status,
+            t0=t0,
+        )
         return result
+
 
     @classmethod
     def search_documents(cls, query: str, caller_agent: str = "MARKET_INTELLIGENCE") -> Dict[str, Any]:
-        """Searches internal documents / knowledge base - Person A Domain 4 seam (INTEGRATION.md)."""
+        """
+        Search internal documents — Person A Domain 4 seam (INTEGRATION.md).
+
+        Absent Domain 4 this returns an empty, ``UNAVAILABLE``-tagged result. Documents are evidence,
+        so inventing them would corrupt provenance rather than merely look wrong.
+        """
         t0 = time.time()
         if not cls._check_permission("search_documents", caller_agent):
-            rec = ToolCallAuditRecord(
-                tool_name="search_documents",
-                caller_agent=caller_agent,
-                arguments={"query": query},
-                status="PERMISSION_DENIED",
-                error_message=f"Agent {caller_agent} lacks permission for search_documents"
-            )
-            cls._audit_log.append(rec)
-            raise PermissionError(rec.error_message)
+            raise cls._denied("search_documents", caller_agent)
 
         documents: List[Dict[str, Any]] = []
-        provider = "builtin"
-        service = cls._domain4_service()
+        provider = "unavailable:domain4"
+        data_status = DataStatus.UNAVAILABLE.value
+        service = cls._service("domain4")
         if service is not None:
-            payload, provider = cls._guarded(
+            payload, provider, data_status = cls._guarded(
                 "domain4", lambda: service.search(query, limit=5)
             )
-            if payload:
-                documents = payload.get("documents", [])
+            if isinstance(payload, dict):
+                documents = list(payload.get("documents", []) or [])
+            elif isinstance(payload, list):
+                documents = list(payload)
 
-        result = {"query": query, "documents": documents}
-        cls._audit_log.append(ToolCallAuditRecord(
+        result = {
+            "query": query,
+            "documents": documents,
+            "provider": provider,
+            "data_status": data_status,
+        }
+        cls._audit(
             tool_name="search_documents",
             caller_agent=caller_agent,
             arguments={"query": query, "provider": provider, "hits": len(documents)},
-            execution_time_ms=(time.time() - t0) * 1000
-        ))
+            provider=provider,
+            data_status=data_status,
+            t0=t0,
+        )
         return result
 
     @classmethod
     def query_company_context(cls, topic: str, caller_agent: str = "MARKET_INTELLIGENCE") -> Dict[str, Any]:
-        """Company capability evidence - Person A Domain 1 seam (INTEGRATION.md)."""
+        """
+        Company capability evidence — Person A Domain 1 seam (INTEGRATION.md).
+
+        Absent Domain 1 this returns an empty, ``UNAVAILABLE``-tagged result. Company capability
+        claims are exactly the kind of assertion that must be evidence-backed, so a placeholder would
+        be worse than an explicit gap.
+        """
         t0 = time.time()
         if not cls._check_permission("query_company_context", caller_agent):
-            rec = ToolCallAuditRecord(
-                tool_name="query_company_context",
-                caller_agent=caller_agent,
-                arguments={"topic": topic},
-                status="PERMISSION_DENIED",
-                error_message=f"Agent {caller_agent} lacks permission for query_company_context"
-            )
-            cls._audit_log.append(rec)
-            raise PermissionError(rec.error_message)
+            raise cls._denied("query_company_context", caller_agent)
 
         context: Dict[str, Any] = {}
-        provider = "builtin"
-        service = cls._domain1_service()
+        provider = "unavailable:domain1"
+        data_status = DataStatus.UNAVAILABLE.value
+        service = cls._service("domain1")
         if service is not None:
-            payload, provider = cls._guarded(
+            payload, provider, data_status = cls._guarded(
                 "domain1", lambda: service.get_company_context(topic)
             )
-            if payload:
-                context = payload
+            if isinstance(payload, dict):
+                context = dict(payload)
 
-        result = {"topic": topic, "context": context}
-        cls._audit_log.append(ToolCallAuditRecord(
+        result = {
+            "topic": topic,
+            "context": context,
+            "provider": provider,
+            "data_status": data_status,
+        }
+        cls._audit(
             tool_name="query_company_context",
             caller_agent=caller_agent,
             arguments={"topic": topic, "provider": provider},
-            execution_time_ms=(time.time() - t0) * 1000
-        ))
+            provider=provider,
+            data_status=data_status,
+            t0=t0,
+        )
         return result
 
     @classmethod
     def query_osint_signals(cls, topic: str, caller_agent: str = "MARKET_INTELLIGENCE") -> List[Dict[str, Any]]:
-        """Queries Person A's External OSINT & Crawlers (Domain 2)."""
+        """
+        External intelligence signals — Person A Domain 2, with Domain 7 as the implemented source.
+
+        Returns a list because that is the established Domain 6 contract. When no source is available
+        the list is **empty**; the audit record carries the ``data_status`` explaining why, and an
+        empty signal set is a visible absence rather than an invented one.
+        """
         t0 = time.time()
         if not cls._check_permission("query_osint_signals", caller_agent):
-            rec = ToolCallAuditRecord(
-                tool_name="query_osint_signals",
-                caller_agent=caller_agent,
-                arguments={"topic": topic},
-                status="PERMISSION_DENIED",
-                error_message=f"Agent {caller_agent} lacks permission for query_osint_signals"
-            )
-            cls._audit_log.append(rec)
-            raise PermissionError(rec.error_message)
+            raise cls._denied("query_osint_signals", caller_agent)
 
-        signals, provider = cls._fetch_osint_signals(topic)
-        cls._audit_log.append(ToolCallAuditRecord(
+        signals, provider, data_status = cls._fetch_osint_signals(topic)
+        cls._audit(
             tool_name="query_osint_signals",
             caller_agent=caller_agent,
-            arguments={"topic": topic, "provider": provider},
-            execution_time_ms=(time.time() - t0) * 1000
-        ))
+            arguments={"topic": topic, "provider": provider, "count": len(signals)},
+            provider=provider,
+            data_status=data_status,
+            t0=t0,
+        )
         return signals
 
     @classmethod
-    def _domain7_service(cls):
-        """Lazy adapter to Domain 7 (Business & Market Intelligence).
-        Returns None when disabled in config or when the package is unavailable,
-        keeping Domain 6 fully self-contained (no hard dependency)."""
-        integration = load_config().get("tools", {}).get("integration", {})
-        if not integration.get("enable_domain7", True):
-            return None
-        try:
-            from business_market_intelligence.service import MarketIntelligenceService
-            return MarketIntelligenceService()
-        except ImportError:
-            return None
+    def _fetch_osint_signals(cls, topic: str) -> "tuple[List[Dict[str, Any]], str, str]":
+        """
+        Returns ``(signals, provider, data_status)``, preferring Domain 7.
 
-    @classmethod
-    def _fetch_osint_signals(cls, topic: str) -> "tuple[List[Dict[str, Any]], str]":
-        """Returns (signals, provider). Prefers Domain 7. Downstream failures are
-        isolated by a circuit breaker and ALWAYS fall back to the built-in mock."""
-        integration = load_config().get("tools", {}).get("integration", {})
-        breaker = _BREAKERS["domain7"]
-        provider = "domain7"
+        When Domain 7 is unavailable or failing this returns an **empty** list tagged
+        ``UNAVAILABLE``/``FAILED``/``DEGRADED``. It previously returned two invented signals — a
+        fabricated "Global Tech News" headline and a fabricated "Government Tender Board" RFP, each
+        with a hardcoded credibility score of 0.89/0.95 and a hardcoded date. Those numbers are the
+        worst kind of fabrication: they *look* like a calibrated confidence, so a downstream consumer
+        would treat them as measured. Removing them is a deliberate behaviour change (§41, §52).
+        """
+        integration = cls.get_bus().integration_settings()
+        service = cls._service("domain7")
+        if service is None:
+            return [], "unavailable:domain7", DataStatus.UNAVAILABLE.value
 
-        if breaker.is_open():
-            provider = "builtin-circuit-open"
-        else:
-            try:
-                domain7 = cls._domain7_service()
-                if domain7 is not None:
-                    limit = int(integration.get("signal_limit", 6))
-                    signals = [s.to_domain6_osint() for s in domain7.get_signals(topic, limit=limit)]
-                    breaker.record_success()
-                    if signals:
-                        return signals, provider
-            except Exception:
-                breaker.record_failure()
-                provider = "builtin-fallback"
-
-        return [
-            {
-                "source": "Global Tech News",
-                "headline": f"Emerging standards in {topic} demand strict data sovereignty",
-                "timestamp": "2026-09-20",
-                "credibility_score": 0.89
-            },
-            {
-                "source": "Government Tender Board",
-                "headline": f"New federal RFP announced requiring high-assurance {topic} compliance",
-                "timestamp": "2026-09-24",
-                "credibility_score": 0.95
-            }
-        ], ("builtin" if provider == "domain7" else provider)
+        limit = int(integration.get("signal_limit", 6))
+        payload, provider, data_status = cls._guarded(
+            "domain7", lambda: [s.to_domain6_osint() for s in service.get_signals(topic, limit=limit)]
+        )
+        if data_status == DataStatus.LIVE.value and not payload:
+            # The domain answered and found nothing. That is a real result, not a failure.
+            return [], f"{provider}:empty", DataStatus.LIVE.value
+        return list(payload or []), provider, data_status
 
     @classmethod
     def evaluate_rfp_fit(cls, rfp_title: str, mandatory_reqs: List[str], caller_agent: str = "OPPORTUNITY_RISK") -> Dict[str, Any]:
         """Evaluates RFP fit and capability matching (Domain 8)."""
         t0 = time.time()
         if not cls._check_permission("evaluate_rfp_fit", caller_agent):
-            rec = ToolCallAuditRecord(
-                tool_name="evaluate_rfp_fit",
-                caller_agent=caller_agent,
-                arguments={"rfp_title": rfp_title},
-                status="PERMISSION_DENIED",
-                error_message=f"Agent {caller_agent} lacks permission for evaluate_rfp_fit"
-            )
-            cls._audit_log.append(rec)
-            raise PermissionError(rec.error_message)
+            raise cls._denied("evaluate_rfp_fit", caller_agent)
 
-        result, provider = cls._fetch_rfp_fit(rfp_title, mandatory_reqs)
-        cls._audit_log.append(ToolCallAuditRecord(
+        result, provider, data_status = cls._fetch_rfp_fit(rfp_title, mandatory_reqs)
+        result.setdefault("provider", provider)
+        result.setdefault("data_status", data_status)
+        cls._audit(
             tool_name="evaluate_rfp_fit",
             caller_agent=caller_agent,
-            arguments={"rfp_title": rfp_title, "reqs_count": len(mandatory_reqs), "provider": provider},
-            execution_time_ms=(time.time() - t0) * 1000
-        ))
+            arguments={"rfp_title": rfp_title, "reqs_count": len(mandatory_reqs),
+                       "provider": provider},
+            provider=provider,
+            data_status=data_status,
+            t0=t0,
+        )
         return result
 
     @classmethod
-    def _domain8_service(cls):
-        """Lazy adapter to Domain 8 (Opportunity, Risk & Requirements Intelligence).
-        Returns None when disabled in config or when the package is unavailable,
-        keeping Domain 6 fully self-contained (no hard dependency)."""
-        integration = load_config().get("tools", {}).get("integration", {})
-        if not integration.get("enable_domain8", True):
-            return None
-        try:
-            from opportunity_risk_intelligence.service import OpportunityRiskService
-            return OpportunityRiskService()
-        except ImportError:
-            return None
+    def _fetch_rfp_fit(
+        cls, rfp_title: str, mandatory_reqs: List[str]
+    ) -> "tuple[Dict[str, Any], str, str]":
+        """
+        Returns ``(result, provider, data_status)``, preferring Domain 8.
 
-    @classmethod
-    def _fetch_rfp_fit(cls, rfp_title: str, mandatory_reqs: List[str]) -> "tuple[Dict[str, Any], str]":
-        """Returns (result, provider). Prefers Domain 8. Downstream failures are
-        isolated by a circuit breaker and ALWAYS fall back to the built-in mock."""
-        breaker = _BREAKERS["domain8"]
-        provider = "domain8"
+        When Domain 8 is unavailable, a keyword-overlap heuristic still reports which requirements
+        matched — that part is genuinely informative. It does **not** issue a ``GO``/``NO_GO``: a
+        bid/no-bid recommendation derived from three keywords is not a defensible business decision,
+        and the previous implementation returned one. The recommendation is ``INSUFFICIENT_DATA``
+        and the result is tagged ``FALLBACK`` so a consumer cannot mistake it for an assessment.
+        """
+        service = cls._service("domain8")
+        if service is not None:
+            payload, provider, data_status = cls._guarded(
+                "domain8", lambda: service.assess(rfp_title, mandatory_reqs).to_domain6_rfp_fit()
+            )
+            if data_status == DataStatus.LIVE.value and isinstance(payload, dict):
+                return dict(payload), provider, data_status
 
-        if breaker.is_open():
-            provider = "builtin-circuit-open"
-        else:
-            try:
-                domain8 = cls._domain8_service()
-                if domain8 is not None:
-                    assessment = domain8.assess(rfp_title, mandatory_reqs)
-                    breaker.record_success()
-                    return assessment.to_domain6_rfp_fit(), provider
-            except Exception:
-                breaker.record_failure()
-                provider = "builtin-fallback"
+        from .config import load_config
 
-        rfp_cfg = load_config().get("tools", {}).get("rfp_fit", {})
-        match_keywords = [str(k).lower() for k in rfp_cfg.get(
-            "capability_match_keywords", ["sovereignty", "security", "audit"]
-        )]
-        go_threshold = float(rfp_cfg.get("go_threshold_percent", 70))
-
+        rfp_cfg = (load_config().get("tools", {}) or {}).get("rfp_fit", {}) or {}
+        match_keywords = [
+            str(k).lower()
+            for k in rfp_cfg.get("capability_match_keywords", ["sovereignty", "security", "audit"])
+        ]
         matched = [r for r in mandatory_reqs if any(k in r.lower() for k in match_keywords)]
         gaps = [r for r in mandatory_reqs if r not in matched]
         fit_percentage = (len(matched) / max(len(mandatory_reqs), 1)) * 100
@@ -427,83 +420,77 @@ class ToolRegistry:
             "fit_score": round(fit_percentage, 2),
             "matched_capabilities": matched,
             "capability_gaps": gaps,
-            "recommendation": "GO" if fit_percentage >= go_threshold else "NO_GO"
-        }, ("builtin" if provider == "domain8" else provider)
+            "recommendation": "INSUFFICIENT_DATA",
+            "recommendation_basis": "keyword-overlap heuristic; no Domain 8 assessment available",
+        }, "heuristic:domain8-unavailable", DataStatus.FALLBACK.value
 
     @classmethod
     def check_legal_compliance(cls, scope_text: str, caller_agent: str = "LEGAL_REGULATORY") -> Dict[str, Any]:
         """Checks regulatory requirements and IP exposure (Domain 9)."""
         t0 = time.time()
         if not cls._check_permission("check_legal_compliance", caller_agent):
-            rec = ToolCallAuditRecord(
-                tool_name="check_legal_compliance",
-                caller_agent=caller_agent,
-                arguments={"scope_text": scope_text[:50]},
-                status="PERMISSION_DENIED",
-                error_message=f"Agent {caller_agent} lacks permission for check_legal_compliance"
-            )
-            cls._audit_log.append(rec)
-            raise PermissionError(rec.error_message)
+            raise cls._denied("check_legal_compliance", caller_agent)
 
-        result, provider = cls._fetch_legal_compliance(scope_text)
-        cls._audit_log.append(ToolCallAuditRecord(
+        result, provider, data_status = cls._fetch_legal_compliance(scope_text)
+        result.setdefault("provider", provider)
+        result.setdefault("data_status", data_status)
+        cls._audit(
             tool_name="check_legal_compliance",
             caller_agent=caller_agent,
             arguments={"scope_length": len(scope_text), "provider": provider},
-            execution_time_ms=(time.time() - t0) * 1000
-        ))
+            provider=provider,
+            data_status=data_status,
+            t0=t0,
+        )
         return result
 
     @classmethod
-    def _domain9_service(cls):
-        """Lazy adapter to Domain 9 (Legal, Regulatory & IP Intelligence).
-        Returns None when disabled in config or when the package is unavailable,
-        keeping Domain 6 fully self-contained (no hard dependency)."""
-        integration = load_config().get("tools", {}).get("integration", {})
-        if not integration.get("enable_domain9", True):
-            return None
-        try:
-            from legal_regulatory_ip_intelligence.service import LegalIntelligenceService
-            return LegalIntelligenceService()
-        except ImportError:
-            return None
+    def _fetch_legal_compliance(cls, scope_text: str) -> "tuple[Dict[str, Any], str, str]":
+        """
+        Returns ``(result, provider, data_status)``, preferring Domain 9.
 
-    @classmethod
-    def _fetch_legal_compliance(cls, scope_text: str) -> "tuple[Dict[str, Any], str]":
-        """Returns (result, provider). Prefers Domain 9. Downstream failures are
-        isolated by a circuit breaker and ALWAYS fall back to the built-in mock."""
-        breaker = _BREAKERS["domain9"]
-        provider = "domain9"
+        When Domain 9 is unavailable this returns ``compliance_status = "UNKNOWN"`` — never
+        ``"CLEARED"``. The previous implementation returned ``CLEARED`` whenever two keyword lists
+        found no match, which is the most dangerous failure in this codebase: a compliance clearance
+        asserted from a substring scan would let a business ship something unlawful, and a false
+        negative in compliance costs far more than a false positive. It also reported a hardcoded
+        ``["EU AI Act", "GDPR", "NIST CSF"]`` as *detected* regulations — asserting facts nobody
+        checked.
+        """
+        service = cls._service("domain9")
+        if service is not None:
+            payload, provider, data_status = cls._guarded(
+                "domain9", lambda: service.analyze(scope_text).to_domain6_legal_check()
+            )
+            if data_status == DataStatus.LIVE.value and isinstance(payload, dict):
+                return dict(payload), provider, data_status
 
-        if breaker.is_open():
-            provider = "builtin-circuit-open"
-        else:
-            try:
-                domain9 = cls._domain9_service()
-                if domain9 is not None:
-                    analysis = domain9.analyze(scope_text)
-                    breaker.record_success()
-                    return analysis.to_domain6_legal_check(), provider
-            except Exception:
-                breaker.record_failure()
-                provider = "builtin-fallback"
+        # Keywords can still *raise* a flag — a possible obligation is worth surfacing. They can
+        # never clear one.
+        from .config import load_config
 
-        comp_cfg = load_config().get("tools", {}).get("compliance", {})
-        cross_border_kw = [str(k).lower() for k in comp_cfg.get("cross_border_keywords", ["data transfer"])]
-        high_risk_ai_kw = [str(k).lower() for k in comp_cfg.get(
-            "high_risk_ai_keywords", ["autonomous agent", "ai agent", "defense"]
-        )]
-        detected_regulations = comp_cfg.get("detected_regulations", ["EU AI Act", "GDPR", "NIST CSF"])
-
-        flags = []
-        if any(k in scope_text.lower() for k in cross_border_kw):
-            flags.append("GDPR Article 44: Cross-border transfer mechanism required.")
-        if any(k in scope_text.lower() for k in high_risk_ai_kw):
-            flags.append("EU AI Act: High-risk AI system oversight & audit logging required.")
+        comp_cfg = (load_config().get("tools", {}) or {}).get("compliance", {}) or {}
+        cross_border_kw = [
+            str(k).lower() for k in comp_cfg.get("cross_border_keywords", ["data transfer"])
+        ]
+        high_risk_kw = [
+            str(k).lower()
+            for k in comp_cfg.get(
+                "high_risk_ai_keywords", ["autonomous agent", "ai agent", "defense"]
+            )
+        ]
+        lowered = scope_text.lower()
+        flags: List[str] = []
+        if any(keyword in lowered for keyword in cross_border_kw):
+            flags.append("GDPR Article 44: Cross-border transfer mechanism may be required.")
+        if any(keyword in lowered for keyword in high_risk_kw):
+            flags.append("EU AI Act: system may fall under high-risk AI obligations.")
 
         return {
-            "compliance_status": "FLAGGED" if flags else "CLEARED",
-            "detected_regulations": detected_regulations,
+            "compliance_status": "UNKNOWN",
+            "detected_regulations": [],
             "compliance_flags": flags,
-            "requires_human_signoff": len(flags) > 0
-        }, ("builtin" if provider == "domain9" else provider)
+            "requires_human_signoff": True,
+            "status_reason": "no Domain 9 assessment available; clearance cannot be asserted",
+        }, "heuristic:domain9-unavailable", DataStatus.FALLBACK.value
+

@@ -358,3 +358,70 @@ and maintenance status: **`docs/technology-selection.md`**.
      horizontal scaling is possible; then P10 — event processing on a real broker (ingest →
      validate → dedup → correlate → enrich → persist) with DLQ and backpressure.
 
+### Increment 3 — P7: tool-bus runtime; removal of fabricated intelligence
+
+* **Added:** `agent_orchestrator/bus.py` (`CircuitBreaker`, `CircuitBreakers`,
+  `InMemoryCircuitBreakers`, `InMemoryAuditSink`, `ToolAuditRecord`, `ToolBus`),
+  `agent_orchestrator/tests/test_tool_bus.py` (21 tests).
+* **Changed:** `agent_orchestrator/tools.py` is now a thin facade over `ToolBus`;
+  `api.py` `/audit/tools` returns a structured envelope; `orchestrator_config.json` gains
+  `allow_demo_data: false` and loses the fabricated `compliance.detected_regulations` list;
+  `vexer_platform/contracts.py` gains the shared `DataStatus` enum (§19), with
+  `persistence.postgres.DataHealth` reduced to an alias of it so the vocabulary cannot drift.
+* **Why:** P7 was scoped as "remove single-node assumptions", but auditing the bus first showed the
+  harder problem was not where the state lived — it was that the state existed to absorb failures
+  with invented data.
+
+**Four real defects fixed in Domain 6 (previously undocumented):**
+
+1. **Configuration was frozen at import.** `TOOL_PERMISSIONS`, the audit cap and the breaker policy
+   were evaluated in class/module bodies, so `VEXER_CONFIG_PATH` and any test config swap were
+   invisible without a process restart, and `reload_config()` could not fix it. A bad config file
+   crashed at *import*. Now: the default bus is built lazily and holds its own config.
+2. **State was process-global.** `_BREAKERS` and `_audit_log` were shared by every caller *and*
+   every worker process, so a horizontally scaled deployment had one circuit breaker per process and
+   an audit trail that was only a fragment. Now: instance-owned, injectable, with `health()` reporting
+   the backend's `distribution` so a single-process bus is never read as cluster-wide.
+3. **The breaker predicate mutated state and was not thread-safe.** `is_open()` transitioned to
+   half-open *as a side effect of being read*, so inspecting a breaker changed it and two threads
+   could both take the probe. It also used `time.time()`, so an NTP step backwards could wedge a
+   breaker open. Now: pure `state`, monotonic clock, one admitted probe, all mutation under a lock.
+4. **Fabricated intelligence (§41, §52).** Four separate fallbacks invented data:
+   * `query_knowledge_graph` returned fixed relationships plus "verified facts" with hardcoded
+     confidences 0.96/0.91 for *any* entity name;
+   * `query_osint_signals` returned a fabricated "Global Tech News" headline and a fabricated
+     "Government Tender Board" RFP, with credibility scores 0.89/0.95 and hardcoded dates;
+   * `evaluate_rfp_fit` returned `GO`/`NO_GO` from a three-keyword overlap heuristic — a bid/no-bid
+     business decision from a substring match;
+   * `check_legal_compliance` returned `compliance_status: CLEARED` whenever two keyword lists found
+     no match, and listed a hardcoded `["EU AI Act","GDPR","NIST CSF"]` as *detected* regulations.
+     **This was the most dangerous defect in the repository**: a compliance clearance asserted from
+     a keyword scan would let a business ship unlawful work, and a false negative in compliance costs
+     far more than a false positive.
+   All four now return empty results tagged with the shared `DataStatus` vocabulary. Keywords may
+   still *raise* a flag; they can never clear one. A labelled demo payload is gated behind
+   `tools.allow_demo_data` (default `false`).
+
+* **Behaviour changes requiring sign-off (deliberate, documented in code and tests):**
+  * `query_knowledge_graph`/`search_documents`/`query_company_context` return `data_status`.
+  * `check_legal_compliance` returns `UNKNOWN` instead of `CLEARED` when Domain 9 is unavailable.
+  * `evaluate_rfp_fit` returns `INSUFFICIENT_DATA` instead of `GO`/`NO_GO` on the heuristic path.
+  * `GET /audit/tools` returns `{records, count, bus}` instead of a bare list.
+  * Four existing tests asserted on the *fabricated* output (`len(relationships) > 0`,
+    `provider == "builtin-fallback"`, `_BREAKERS`, `_audit_log.maxlen`). They were rewritten against
+    the new seams (`ToolRegistry.set_bus`, injected `service_resolver`, `isolated_bus` fixture).
+    These tests validated a mock, not a contract.
+* **Validation:** 214 passed / 1 skipped; pyflakes exit 0; `test_drive.py` completes the full
+  HITL lifecycle; no fabricated literal remains in any source file.
+* **NOT validated:** still no live database and no multi-process test. The Postgres-backed breaker
+  registry and audit sink are **designed for** in `bus.py` but **not implemented** — an in-memory
+  sink cannot be made cluster-wide, so honest horizontal scaling of the audit trail remains future
+  work. No latency or throughput figure is claimed.
+* **Still open (not in this increment):** `agents.py` hardcodes
+  `competitive_posture`, `market_growth_vector` and `confidence_score` as constant strings, and the
+  Phase 1/2 decision-report tests assert on that text. Removing it changes decision output and needs
+  its own increment and explicit sign-off — flagged, not silently changed.
+* **Next increment:** P10 — event processing on a real broker (ingest → validate → dedup → correlate
+  → enrich → persist) with DLQ and backpressure, plus the Postgres-backed audit sink so the audit
+  trail survives more than one process.
+

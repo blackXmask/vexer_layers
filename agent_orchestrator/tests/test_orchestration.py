@@ -19,18 +19,41 @@ from fastapi.testclient import TestClient
 from agent_orchestrator.models import AgentRole, OrchestratorState, SubTask, TaskStatus
 from agent_orchestrator.orchestrator import build_orchestration_graph, build_checkpoint_serde, router
 from agent_orchestrator.tools import ToolRegistry
+from agent_orchestrator.bus import ToolBus
 from agent_orchestrator.llm_engine import EnterpriseLLMEngine, LLMConfig, ModelProvider
 from agent_orchestrator.api import app
+
+
+@pytest.fixture
+def isolated_bus():
+    """
+    Give the test its own :class:`ToolBus`, then restore the default.
+
+    Since P7 the bus holds all tool-bus state (breakers, audit sink, RBAC). Tests that exercise
+    breaker or audit behaviour must not reach into module globals to reset it — they build an
+    isolated bus, which is also the seam a worker uses in production. The restore in ``finally``
+    keeps the default bus clean for the rest of the module.
+    """
+    previous = ToolRegistry._bus
+    bus = ToolBus.from_config({})
+    ToolRegistry.set_bus(bus)
+    try:
+        yield bus
+    finally:
+        ToolRegistry.set_bus(previous)
 
 
 def test_tool_registry_rbac_and_audit():
     """Verify tool sandboxing, RBAC permission enforcement, and execution telemetry."""
     ToolRegistry.clear_audit_trail()
 
-    # Authorized call
+    # Authorized call. Person A's Domain 5 does not exist, so the honest answer is "no data" —
+    # the result must SAY that rather than inventing relationships (§19, §41).
     res = ToolRegistry.query_knowledge_graph("Vexer Corp", caller_agent="MARKET_INTELLIGENCE")
     assert res["entity"] == "Vexer Corp"
-    assert len(res["relationships"]) > 0
+    assert res["relationships"] == []
+    assert res["data_status"] == "UNAVAILABLE"
+    assert res["provider"].startswith("unavailable:")
 
     # Unauthorized call should raise PermissionError
     with pytest.raises(PermissionError):
@@ -41,6 +64,8 @@ def test_tool_registry_rbac_and_audit():
     assert len(audit) == 2
     assert audit[0].status == "SUCCESS"
     assert audit[0].caller_agent == "MARKET_INTELLIGENCE"
+    # The audit record itself carries the degraded status, so a reader of the trail can tell.
+    assert audit[0].data_status == "UNAVAILABLE"
     assert audit[1].status == "PERMISSION_DENIED"
     assert audit[1].caller_agent == "LEGAL_REGULATORY"
 
@@ -185,7 +210,13 @@ def test_fastapi_enterprise_endpoints():
     # 4. Check tool audit trail
     res_audit = client.get("/audit/tools")
     assert res_audit.status_code == 200
-    assert len(res_audit.json()) > 0
+    body = res_audit.json()
+    # P7: the endpoint returns a structured envelope, and declares whether the audit trail is
+    # per-process or shared, so a reader cannot mistake a worker-local fragment for the real trail.
+    assert body["count"] >= 0
+    assert isinstance(body["records"], list)
+    assert body["bus"]["breaker_distribution"] == "single-process"
+    assert body["bus"]["audit_distribution"] == "single-process"
 
 
 
@@ -226,62 +257,71 @@ def test_fail_closed_governance_when_agent_fails(monkeypatch):
     assert "FAILED" in artifact.summary
 
 
-def test_domain_failure_isolated_and_falls_back(monkeypatch):
-    """A crashing domain is isolated: builtin mock is served and the failure is audited."""
+def test_domain_failure_isolated_and_falls_back(monkeypatch, isolated_bus):
+    """A crashing domain is isolated: the failure is audited and the caller sees no fabricated data."""
     import business_market_intelligence.service as d7_service
-    from agent_orchestrator.tools import _BREAKERS
 
     def _boom(self, topic, limit=None):
         raise RuntimeError("D7 market store unreachable")
 
-    _BREAKERS["domain7"].record_success()
-    _BREAKERS["domain7"].opened_at = None
+    breaker = isolated_bus._breakers.breaker("domain7")
+    breaker.reset()
     monkeypatch.setattr(d7_service.MarketIntelligenceService, "get_signals", _boom)
 
     ToolRegistry.clear_audit_trail()
     signals = ToolRegistry.query_osint_signals("defense AI", caller_agent="MARKET_INTELLIGENCE")
 
-    assert len(signals) > 0  # caller still gets a usable result
-    assert ToolRegistry.get_audit_trail()[0].arguments["provider"] == "builtin-fallback"
-    assert _BREAKERS["domain7"].failures == 1
+    # No invented signals: the caller gets an empty list and an explicit FAILED status.
+    assert signals == []
+    record = ToolRegistry.get_audit_trail()[0]
+    assert record.provider == "error:domain7"
+    assert record.data_status == "FAILED"
+    # The tool call itself succeeded; the downstream dependency did not. Both facts are recorded.
+    assert record.status == "SUCCESS"
+    assert breaker.state == "closed"  # one failure is below the threshold
+    breaker.reset()
 
-    _BREAKERS["domain7"].record_success()
-    _BREAKERS["domain7"].opened_at = None
 
-
-def test_circuit_breaker_opens_and_short_circuits(monkeypatch):
+def test_circuit_breaker_opens_and_short_circuits(monkeypatch, isolated_bus):
     """After N consecutive failures the breaker opens and skips the domain entirely."""
     import business_market_intelligence.service as d7_service
-    from agent_orchestrator.tools import _BREAKERS
 
     def _boom(self, topic, limit=None):
         raise RuntimeError("still down")
 
-    breaker = _BREAKERS["domain7"]
-    breaker.record_success()
-    breaker.opened_at = None
+    breaker = isolated_bus._breakers.breaker("domain7")
+    breaker.reset()
     monkeypatch.setattr(d7_service.MarketIntelligenceService, "get_signals", _boom)
 
     for _ in range(3):
         ToolRegistry.query_osint_signals("x", caller_agent="MARKET_INTELLIGENCE")
-    assert breaker.is_open() is True
+    assert breaker.state == "open"
 
+    # While open the domain is not called at all, and the reason is visible in the audit trail.
     ToolRegistry.clear_audit_trail()
     ToolRegistry.query_osint_signals("x", caller_agent="MARKET_INTELLIGENCE")
-    assert ToolRegistry.get_audit_trail()[0].arguments["provider"] == "builtin-circuit-open"
+    record = ToolRegistry.get_audit_trail()[0]
+    assert record.provider == "circuit-open:domain7"
+    assert record.data_status == "DEGRADED"
 
-    breaker.opened_at = None  # reset for the rest of the suite
+    breaker.reset()
 
 
 def test_audit_log_is_bounded():
     """Audit trail is capped so long-running servers cannot leak memory."""
-    ToolRegistry._audit_log.maxlen = 25
-    ToolRegistry.clear_audit_trail()
-    for _ in range(200):
-        ToolRegistry.query_osint_signals("x", caller_agent="MARKET_INTELLIGENCE")
-    assert len(ToolRegistry.get_audit_trail()) == 25
-    ToolRegistry._audit_log.maxlen = 1000
-    ToolRegistry.clear_audit_trail()
+    previous = ToolRegistry._bus
+    ToolRegistry.set_bus(ToolBus.from_config({"tools": {"audit": {"max_records": 25}}}))
+    try:
+        ToolRegistry.clear_audit_trail()
+        for _ in range(200):
+            ToolRegistry.query_osint_signals("x", caller_agent="MARKET_INTELLIGENCE")
+        assert len(ToolRegistry.get_audit_trail()) == 25
+        # A truncated audit reports itself as degraded rather than looking complete (§19).
+        health = ToolRegistry.bus_health()
+        assert health["audit_dropped"] == 175
+        assert health["data_status"] == "DEGRADED"
+    finally:
+        ToolRegistry.set_bus(previous)
 
 
 def test_api_key_authentication(monkeypatch):
@@ -339,7 +379,13 @@ class _FakeOrg:
 
 
 def test_person_a_seams_inactive_by_default():
-    """With flags off and packages absent, seams degrade to built-in behaviour."""
+    """
+    With flags off and packages absent, seams report an explicit gap.
+
+    The behaviour changed in P7: these used to return a static "builtin" payload (invented
+    relationships and a fixed regulation list). They now return empty results tagged
+    ``UNAVAILABLE``, which is the difference between a visible gap and invented intelligence.
+    """
     ToolRegistry.clear_audit_trail()
 
     docs = ToolRegistry.search_documents("security", caller_agent="MARKET_INTELLIGENCE")
@@ -348,50 +394,69 @@ def test_person_a_seams_inactive_by_default():
 
     assert docs["documents"] == []
     assert ctx["context"] == {}
-    assert kg["entity"] == "Vexer Corp"          # static fallback still usable
-    providers = [r.arguments.get("provider") for r in ToolRegistry.get_audit_trail()]
-    assert providers == ["builtin", "builtin", "builtin"]
+    assert kg["relationships"] == []
+    for result in (docs, ctx, kg):
+        assert result["data_status"] == "UNAVAILABLE"
+    providers = [r.provider for r in ToolRegistry.get_audit_trail()]
+    assert providers == [
+        "unavailable:domain4",
+        "unavailable:domain1",
+        "unavailable:domain5",
+    ]
 
 
-def test_person_a_seams_activate_when_provider_present(monkeypatch):
-    """When Person A's service is importable, results and provider tags flow through."""
-    fakes = {"enable_domain5": _FakeKG(), "enable_domain4": _FakeDocs(), "enable_domain1": _FakeOrg()}
+def test_person_a_seams_activate_when_provider_present():
+    """When Person A's service is resolvable, results and provider tags flow through."""
+    fakes = {
+        "domain5": _FakeKG(),
+        "domain4": _FakeDocs(),
+        "domain1": _FakeOrg(),
+    }
+    previous = ToolRegistry._bus
+    ToolRegistry.set_bus(
+        ToolBus.from_config({}, service_resolver=lambda key: fakes.get(key))
+    )
+    try:
+        ToolRegistry.clear_audit_trail()
+        kg = ToolRegistry.query_knowledge_graph("Vexer Corp", caller_agent="MARKET_INTELLIGENCE")
+        docs = ToolRegistry.search_documents("security", caller_agent="MARKET_INTELLIGENCE")
+        ctx = ToolRegistry.query_company_context("defense AI", caller_agent="MARKET_INTELLIGENCE")
 
-    def _fake_service(flag, module, attribute):
-        return fakes.get(flag)
+        assert kg["verified_facts"][0]["fact"] == "real graph fact"
+        assert docs["documents"][0]["title"] == "ISO27001 certificate"
+        assert ctx["context"]["certifications"] == ["ISO27001"]
+        for result in (kg, docs, ctx):
+            assert result["data_status"] == "LIVE"
 
-    monkeypatch.setattr(ToolRegistry, "_optional_domain_service",
-                        staticmethod(_fake_service))
-
-    ToolRegistry.clear_audit_trail()
-    kg = ToolRegistry.query_knowledge_graph("Vexer Corp", caller_agent="MARKET_INTELLIGENCE")
-    docs = ToolRegistry.search_documents("security", caller_agent="MARKET_INTELLIGENCE")
-    ctx = ToolRegistry.query_company_context("defense AI", caller_agent="MARKET_INTELLIGENCE")
-
-    assert kg["verified_facts"][0]["fact"] == "real graph fact"
-    assert docs["documents"][0]["title"] == "ISO27001 certificate"
-    assert ctx["context"]["certifications"] == ["ISO27001"]
-
-    providers = [r.arguments.get("provider") for r in ToolRegistry.get_audit_trail()]
-    assert providers == ["domain5", "domain4", "domain1"]
+        providers = [r.provider for r in ToolRegistry.get_audit_trail()]
+        assert providers == ["domain5", "domain4", "domain1"]
+    finally:
+        ToolRegistry.set_bus(previous)
 
 
-def test_person_a_seam_failure_falls_back_safely(monkeypatch):
-    """A crashing Person A service must not break the workflow."""
+def test_person_a_seam_failure_falls_back_safely():
+    """A crashing Person A service must not break the workflow, and must not be disguised."""
     class _Broken:
         def query_entity(self, entity_name):
             raise RuntimeError("graph down")
 
-    monkeypatch.setattr(ToolRegistry, "_optional_domain_service",
-                        staticmethod(lambda flag, module, attr: _Broken() if flag == "enable_domain5" else None))
-
-    ToolRegistry.clear_audit_trail()
-    kg = ToolRegistry.query_knowledge_graph("Vexer Corp", caller_agent="MARKET_INTELLIGENCE")
-    assert kg["entity"] == "Vexer Corp"      # static fallback served
-    assert ToolRegistry.get_audit_trail()[0].arguments["provider"] == "builtin-fallback"
-
-    from agent_orchestrator.tools import _BREAKERS
-    _BREAKERS["domain5"].opened_at = None
+    previous = ToolRegistry._bus
+    ToolRegistry.set_bus(
+        ToolBus.from_config(
+            {}, service_resolver=lambda key: _Broken() if key == "domain5" else None
+        )
+    )
+    try:
+        ToolRegistry.clear_audit_trail()
+        kg = ToolRegistry.query_knowledge_graph("Vexer Corp", caller_agent="MARKET_INTELLIGENCE")
+        # The call still returns a well-formed result; it is explicitly empty and FAILED.
+        assert kg["entity"] == "Vexer Corp"
+        assert kg["relationships"] == []
+        record = ToolRegistry.get_audit_trail()[0]
+        assert record.provider == "error:domain5"
+        assert record.data_status == "FAILED"
+    finally:
+        ToolRegistry.set_bus(previous)
 
 
 def test_person_a_seam_tools_enforce_rbac():

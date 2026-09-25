@@ -131,10 +131,11 @@
       "capability_match_keywords": ["sovereignty", "security", "audit"]
     },
     "compliance": {
-      "detected_regulations": ["EU AI Act", "GDPR", "NIST CSF"],
       "cross_border_keywords": ["data transfer"],
       "high_risk_ai_keywords": ["autonomous agent", "ai agent", "defense"]
     },
+    "allow_demo_data": false,
+    "allow_demo_data_note": "Increment 3 removed the fabricated fallbacks (invented relationships, tenders, regulations and credibility scores). This flag gates a small, clearly-labelled demo payload used only for local demonstrations. It is false by default and must stay false in any deployed environment: a demo record is not evidence, and evidence-shaped fabrications are exactly what this platform exists to prevent (mandate 41, 52).",
     "integration": {
       "enable_domain7": true,
       "enable_domain8": true,

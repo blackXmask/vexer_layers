@@ -36,6 +36,7 @@ import asyncpg
 
 from .. import contracts as C
 from ..config import require_env
+from ..contracts import DataStatus
 from ..errors import ErrorCode, VexerError
 from . import rows as R
 from . import schema as S
@@ -54,23 +55,23 @@ _DEADLOCK_DETECTED = "40P01"
 
 class DataHealth(str, Enum):
     """
-    Explicit data-freshness/health states (§19). A degraded read path must never be
-    indistinguishable from a live one.
+    Backwards-compatible alias for :class:`vexer_platform.contracts.DataStatus`.
 
-    ``LIVE``       real datastore, current data
-    ``DEGRADED``   reachable but impaired (slow, partial, replication lag)
-    ``STALE``      serving data older than the freshness budget
-    ``FALLBACK``   a documented alternate path produced the result (e.g. recursive CTE, not AGE)
-    ``FAILED``     last operation failed; state is unknown
-    ``UNAVAILABLE`` cannot be reached at all
+    The six states were originally defined here, in the persistence layer. The Domain 6 tool bus
+    needs the same vocabulary, and two definitions of "degraded vs unavailable" would drift and let
+    a component report a status nothing else recognises. The canonical enum now lives in
+    ``contracts`` (mandate §19) and this name is kept so existing imports and tests keep working.
     """
 
-    LIVE = "LIVE"
-    DEGRADED = "DEGRADED"
-    STALE = "STALE"
-    FALLBACK = "FALLBACK"
-    FAILED = "FAILED"
-    UNAVAILABLE = "UNAVAILABLE"
+    LIVE = DataStatus.LIVE.value
+    DEGRADED = DataStatus.DEGRADED.value
+    STALE = DataStatus.STALE.value
+    FALLBACK = DataStatus.FALLBACK.value
+    FAILED = DataStatus.FAILED.value
+    UNAVAILABLE = DataStatus.UNAVAILABLE.value
+
+
+assert set(DataHealth) == set(DataStatus), "health vocabulary drifted from the shared contract"
 
 
 @dataclass(frozen=True)
