@@ -3,15 +3,28 @@
 > Read-only audit. Every claim below is backed by a reproducible check (command or file:line).
 > §49: no claim here is asserted without evidence, and where something is unvalidated it says so.
 
-## Headline
+## Headline (round 2 — deeper)
 
-The platform layer and the working domains are **two disconnected systems**. `vexer_platform` is
-3,393 lines; the only symbol any domain imports from it is the `DataStatus` enum. `conf-v1`,
-`ProvenanceRecord`, `Claim`, `ValidityWindow`, `PostgresStore`, `record_event`, `VexerError`,
-`ErrorCode` and `new_ulid` have **zero call sites in domain code**. Nothing has ever been written to
-PostgreSQL by a running service. The system's real intelligence is a synchronous, in-memory,
-in-process request/response chain with hardcoded strings and eight mutually incomparable confidence
-formulas.
+Three findings dominate, and they were not visible in round 1:
+
+1. **51% of the test suite tests unreachable code** (83 of 162 test functions target `vexer_platform`,
+   which no running service calls). The suite is green and therefore **actively misleading** — it
+   certifies a persistence layer, a confidence model and a provenance DAG that the product does not
+   use.
+2. **The "AI" layer is a keyword matcher, and one provider silently lies.** `ModelProvider.ANTHROPIC`
+   is declared and unreachable: requesting it returns the **MOCK** response with no error. An operator
+   who configures Anthropic believes they have Claude and gets `decompose_rules` keyword matching.
+3. **The platform runs unauthenticated.** `auth.enabled = false` on all four services, by default,
+   with ports exposed. And the P7 import-time-config defect I fixed in `tools.py` is still present in
+   all four `api.py` files, so auth cannot be toggled without a restart even if you try.
+
+Underneath those: the platform layer and the working domains remain two disconnected systems.
+`vexer_platform` is 3,393 lines; the only symbol any domain imports is the `DataStatus` enum.
+`conf-v1`, `ProvenanceRecord`, `Claim`, `ValidityWindow`, `PostgresStore`, `record_event`,
+`VexerError`, `new_ulid` — **zero call sites**. Nothing has ever been written to PostgreSQL by a
+running service. The real system is a synchronous, in-process chain with hardcoded strings, eight
+incomparable confidence formulas, no event pipeline, no provenance, and no observability.
+
 
 ## Evidence
 
@@ -98,6 +111,70 @@ Zero `logging` imports, zero metrics, zero tracing across all four domains. The 
 a `/health` endpoint returning static strings and an in-memory audit list. You cannot measure
 latency, error rate, throughput or queue depth; you cannot debug a production incident. Nothing here
 can meet an SLA or support on-call.
+
+## Round 2 — findings that need their own section
+
+### A. The test suite certifies code the product does not use
+
+```
+agent_orchestrator/tests                 44 tests   live code
+business_market_intelligence/tests       12         live code
+opportunity_risk_intelligence/tests      12         live code
+legal_regulatory_ip_intelligence/tests   11         live code
+root tests/ (all target vexer_platform)  83         UNREACHABLE CODE
+                                        ──
+                                         162 total  ->  51% dead
+```
+
+Worse than useless in one specific way: those 83 tests are the reason "218 passed" was reported as
+evidence of a working persistence layer. They pass, and they are true — about code that never runs.
+A green suite is currently evidence of nothing for the platform layer.
+
+**Required:** a test that fails if the platform stays disconnected — e.g. assert that a live
+`/workflows/start` produces a `ProvenanceRecord` and an `Event` row. That single test converts 83
+passing unit tests into a load-bearing contract.
+
+### B. The LLM layer: a keyword matcher wearing an AI label
+
+| Claim | Reality |
+|---|---|
+| "Multi-provider reasoning adapter supporting OpenAI, Ollama, Anthropic" (`agent_orchestrator/README.md:8`) | 2 of 3 reachable. **`ANTHROPIC` is a dead branch** — `generate()` at `llm_engine.py:54-59` tests `OPENAI`, then `OLLAMA`, else mock. |
+| Default provider is a reasoning model | Default is `MOCK`; `_call_enterprise_mock` matches `llm.mock.decompose_rules` keywords and returns a `thought_process` string **from config**. |
+| Verified live: `LLMConfig(provider=ANTHROPIC)` → returns `{"thought_process": "Decomposed multi-domain enterprise inquiry..."}` with mock subtasks. | No error, no warning, no fallback signal. A silent lie to the operator. |
+
+`generate()` must raise on an unsupported/unimplemented provider rather than falling through to a
+mock. A mock that is indistinguishable from a model is worse than no model: it makes the product
+look intelligent in a demo and wrong in production.
+
+### C. Security posture
+
+| Finding | Detail |
+|---|---|
+| **All four services ship unauthenticated** | `api.auth.enabled = false` in every config, by default, with ports 8000–8003 bound. `/health` is deliberately open; **every other route is too.** |
+| **Auth cannot be toggled without a restart** | `api.py:14,19,20`: `_api_cfg = load_config().get("api", {})` and `_AUTH = [Depends(require_api_key)]` execute at **import time** — the exact P7 defect fixed in `tools.py`, still present in all four API modules. The dependency list is frozen at import. |
+| **No rate limiting, no audit of access** | The in-memory audit ring dies with the process; there is no record of who read what. |
+| **Keyword matching is safe (verified)** | `legal_.../analytics.py:31` uses `re.escape` + word boundaries, and API inputs are length-bounded (`scope` max 2000, `topic` max 500). No regex injection, no unbounded input. |
+| **Prompt boundary does not exist yet** | Not a current vulnerability (the LLM is a mock), but it becomes one the moment crawled web text from Person A's domain 2 reaches a real model. Content must be fenced and provenance-tagged *before* that integration lands, not after. |
+
+### D. Configuration fragmentation
+
+Four copy-pasted `config.py` modules — each with its own `load_config`, `@lru_cache(maxsize=4)`,
+`DEFAULT_CONFIG_PATH`, `reload_config()` and env-var namespace (`VEXER_CONFIG_PATH`,
+`VEXER_MBI_CONFIG_PATH`, `VEXER_ORI_CONFIG_PATH`, `VEXER_LRI_CONFIG_PATH`). Meanwhile the shared
+`vexer_platform.config.load_kernel_config` — profiles, fail-fast validation, `PlatformProfile` — sits
+with **zero call sites**. The platform already solved configuration; the domains did not use it.
+
+### E. Module-global mutable state still present in the domains
+
+P7 removed the process-global breakers and audit list from `tools.py`. The same pattern survives
+elsewhere:
+
+* `business_market_intelligence/sources.py:16` — `_external_provider: Optional[Any] = None`, mutated by
+  `set_external_provider()`. Not thread-safe; two concurrent requests can observe each other's
+  provider, and the audit trail cannot say which provider produced a given signal.
+
+Every one of these should be constructor-injected, as `ToolBus` now is.
+
 
 ## What is genuinely sound (kept, not rewritten)
 
@@ -254,10 +331,12 @@ is decoration. Steps 4–7 are the capabilities that only make sense once it is.
 ### 1. Make the kernel load-bearing (highest leverage, smallest change)
 Replace the hardcoded `agents.py:104-105` strings and the three config confidence constants with real
 computation: D7/D8/D9 results become `vexer_platform.contracts.IntelligenceSignal` +
-`ProvenanceRecord` + `Evidence`, and D6 **persists them** via `PostgresStore.record_event`. Success
-test: the platform is no longer dead code — `vexer_platform` symbols have non-zero call sites, and a
-query round-trips entity → evidence → signal → provenance in PostgreSQL.
-*Unlocks: the single correctness problem (steps 2–3 need it), provenance, persistence, replay.*
+`ProvenanceRecord` + `Evidence`, and D6 **persists them** via `PostgresStore.record_event`.
+**Ship one integration test with it** — a live `/workflows/start` must produce a `ProvenanceRecord`
+and an `Event` row. That single test is what stops 51% of the suite testing dead code.
+*Unlocks: the single correctness problem (steps 2–3 need it), provenance, persistence, replay, and a
+suite that means something.*
+
 
 ### 2. Kill the eight confidence formulas; adopt conf-v1 as the only model
 Delete `base_conf + len(signals) * 0.01` and its five siblings. Route every score through
@@ -270,6 +349,14 @@ evidence reports low confidence; adding corroborating sources raises it; a contr
 Implement `PostgresAuditSink` against the existing `append_audit` and route `ToolBus` records to it.
 Success test: `audit_log` is non-empty in a live run and `verify_audit_chain()` passes.
 *Unlocks: §45, the governance story, and the tamper-evidence already built but unreachable.*
+
+### 3a. Fix the two "lies" before anything else (hours, not days)
+`generate()` must **raise** on `ANTHROPIC` (unimplemented) rather than silently returning the mock;
+and every "supports Anthropic" claim in the docs must be corrected. Separately: stop shipping
+`auth.enabled = false` as a default for anything reachable, and move `_api_cfg` / `_AUTH` out of
+import time in all four `api.py` files so auth can be turned on without a code change.
+*Unlocks: operator trust. A system that silently substitutes a mock for a model, or serves
+unauthenticated by default, will be trusted in exactly the situations where it must not be.*
 
 ### 4. Idempotency + timeouts + bounded retries on the execution path
 Require an idempotency key on `POST /workflows/start` (reject a replay or return the original
