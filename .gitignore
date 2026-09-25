@@ -11,3 +11,8 @@ vexer_agent_checkpoints.db-wal
 
 # Secrets — never commit real API keys
 .env
+
+# Local Alembic overrides (a developer may point at a local database here; it must never be
+# committed because it can contain a DSN with a password). migrations/env.py reads the DSN from
+# VEXER_POSTGRES_DSN, not from alembic.ini, so nothing needs to be stored here at all.
+alembic.local.ini

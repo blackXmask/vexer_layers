@@ -1,0 +1,35 @@
+# Vexer platform — persistence and migration dependencies (mandate §6, §48).
+#
+# WHY A SEPARATE FILE: requirements.txt is the baseline that the Domain 6-9 test suites were
+# validated against and must stay installable without any infrastructure. This file adds the
+# drivers the platform kernel needs. Both are consumed by deploy/Dockerfile.
+#
+# LICENCE EVIDENCE (§48 — do not adopt a licence claim on reputation):
+#
+# | Package        | Version | Licence    | Evidence                        |
+# |----------------|---------|------------|---------------------------------|
+# | asyncpg        | 0.31.0  | UNVERIFIED | PyPI metadata declares no License
+# |                |         |            | field and no licence Classifier.
+# |                |         |            | RESOLVE BEFORE RELEASE (P3).
+# | alembic        | 1.20.0  | UNVERIFIED | as above.
+# | sqlalchemy     | 2.1.1   | UNVERIFIED | as above.
+# | pytest-asyncio | 1.4.0   | UNVERIFIED | as above.
+#
+# The current metadata format simply does not ship these fields for these projects, so the licence
+# matrix is INCOMPLETE and that is stated rather than filled in with a guess. Action item: resolve
+# each by reading the project's LICENSE file (or its PyPI licence-expression) and record the result
+# in docs/technology-selection.md, which already tracks the other unresolved rows.
+#
+# Install:  .venv\Scripts\pip install -r requirements.txt -r requirements-platform.txt
+
+# --- PostgreSQL driver (§23) ---
+asyncpg==0.31.0
+
+# --- Schema migrations (§4: versioned, auditable schema changes) ---
+alembic==1.20.0
+sqlalchemy==2.1.1
+
+# --- Test support for the async persistence layer (§33) ---
+# Required, not optional: without it the live-DB tests error instead of running, which would make
+# a green suite misleading.
+pytest-asyncio==1.4.0

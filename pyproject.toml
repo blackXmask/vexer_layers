@@ -49,3 +49,13 @@ testpaths = [
 ]
 python_files = ["test_*.py"]
 addopts = "-q"
+# The persistence layer is async, so the async plugin is a hard requirement of the test suite
+# rather than an optional extra: without it the live-DB tests would error instead of running.
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+asyncio_default_test_loop_scope = "function"
+markers = [
+    # One line: TOML has no implicit string concatenation across lines, so a wrapped marker
+    # description is a parse error rather than a readable multi-line string.
+    "integration: requires a real external system (live PostgreSQL, broker, search). Gated on an environment variable and skipped with a reason when it is absent - a skip is never reported as a pass.",
+]

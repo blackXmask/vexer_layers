@@ -293,3 +293,68 @@ and maintenance status: **`docs/technology-selection.md`**.
 
 
 
+### Increment 2 — persistence: data model, migrations, real PostgreSQL access
+
+* **Added (additive only):**
+  * `vexer_platform/persistence/schema.py` — canonical DDL: 6 enum types, 12 tables, 44 indexes,
+    monthly `event` partitions generated relative to the deploy date, and `iter_ddl()` in strict
+    dependency order (enums → tables → indexes → partitions).
+  * `vexer_platform/persistence/rows.py` — declarative contract ↔ column mapping (`TableSpec` /
+    `Column`), pure `to_params`/`from_row` round-trip, and fully parameterised statement builders.
+  * `vexer_platform/persistence/postgres.py` — real `asyncpg` store: bounded pool, batched writes,
+    global event idempotency, temporal reads, server-side cursor streaming, bounded recursive-CTE
+    lineage walk, hash-chained audit log with verification, and explicit `DataHealth` reporting.
+  * `migrations/` + `alembic.ini` — revision `0001_initial` that executes the canonical DDL (no
+    copied SQL), `env.py` that refuses to run without an explicit `VEXER_POSTGRES_DSN`, and a
+    `script.py.mako` template.
+  * `docker-compose.yml` + `deploy/Dockerfile` — pinned PostgreSQL 16.4-alpine with healthcheck,
+    non-root build, dropped capabilities, read-only runtime, and a one-shot `migrate` service.
+  * `docs/data-model.md`, `requirements-platform.txt`, `.gitignore` entry, pytest markers/asyncio
+    config in `pyproject.toml`.
+  * `tests/test_kernel_persistence_schema.py` (42 tests), `tests/test_kernel_persistence_rows.py`
+    (52 tests), `tests/test_kernel_persistence_integration.py` (20 tests, DSN-gated).
+* **Why:** the mandate's phases 5–6 (data model, infrastructure) precede 9–11 (persistence,
+  event processing, provenance). Choosing Postgres/Kafka/Qdrant payloads before the contracts
+  existed would have guaranteed rework; increment 1 fixed the contracts, so the schema could be
+  derived from them rather than guessed.
+* **Broke:** nothing. All changes are additive; the 100-test baseline is preserved. The
+  `asyncio_mode = "auto"` addition is the only global test-config change and does not affect the
+  four pre-existing domain suites (all synchronous).
+* **Fixed — four real defects the new tests caught (all in increment-2 code, none in D6–D9):**
+  1. **Inconsistent DDL statement terminators** — one-line `CREATE INDEX` statements had no `;`.
+     Fixed at the single assembly point (`iter_ddl` → `_terminated`) rather than by hand-editing 30
+     statements, so the invariant holds for statements added later.
+  2. **Malformed `alembic.ini` config (TOML syntax error)** — a pytest marker description was
+     written as Python-style implicit string concatenation across lines, which TOML does not
+     support. Caught by a `tomllib` parse check after pytest refused to start.
+  3. **Broken async test harness** — `pytest-asyncio` was not installed and the module-scoped
+     fixture used `loop_scope` on `pytest.fixture` (only valid on `pytest_asyncio.fixture`), so the
+     live-DB suite would have *errored* rather than run once a DSN was supplied. Fixed by adding
+     the dependency and using the correct decorator; verified by running a DSN-independent
+     integration test to green.
+  4. **Fixture bug in the test suite** — a `CausalLink` sample used `occurred_at`; the contract
+     field is `timestamp`, and `extra="forbid"` caught it at collection time.
+* **Tests added:** 94 unit/contract tests plus 20 DSN-gated integration tests. Two assertions in my
+  own parity test were also wrong (they searched only *named* table constraints and compared a
+  constraint name case-sensitively); corrected to inspect the whole `CREATE TABLE` statement.
+* **Validated here:** 194 passed / 1 skipped; pyflakes exit 0; `alembic upgrade head --sql`
+  generates 278 lines of real PostgreSQL DDL offline; `alembic` refuses to run without a DSN; the
+  store raises a structured `DEPENDENCY_UNAVAILABLE` against a genuinely unreachable server and
+  reports `UNAVAILABLE` rather than falling back.
+* **NOT validated (do not overread):** no migration has been applied to a live PostgreSQL instance
+  and no integration test has passed against a live database — Docker is absent here.
+  `docker-compose.yml` and `deploy/Dockerfile` are reviewed, not built. No performance figure is
+  claimed. Four new dependencies have no licence metadata (recorded as UNVERIFIED, not guessed).
+* **Risks remaining:** §9 items 1–6, plus:
+  7. **Partition maintenance is not automated** — `partition_ddl` creates 24 months from the deploy
+     date; a scheduled job must extend it and drop partitions behind the retention horizon.
+  8. **Retention policy undefined** — §44 requires a policy; none is set, so nothing is dropped.
+  9. **`downgrade()` on revision 0001 is destructive** (drops all tables). Intentional for a
+     disposable database, but §54 requires a documented migration strategy before anyone runs it
+     against real data.
+
+* **Next increment:** P7 — remove the single-node assumptions in the Domain 6 tool bus
+     (`_BREAKERS` class-level mutable state, in-memory audit, import-time config reads) so
+     horizontal scaling is possible; then P10 — event processing on a real broker (ingest →
+     validate → dedup → correlate → enrich → persist) with DLQ and backpressure.
+

@@ -1,0 +1,92 @@
+# Vexer platform — local/CI infrastructure (mandate §4, §30).
+#
+# HONESTY NOTE (§49): this file is a *deployment definition*. It was authored and statically
+# reviewed, but Docker is not installed in the environment where it was written, so it has NOT been
+# executed. Nothing in the platform depends on it being correct-by-hope: the code requires a real
+# PostgreSQL server and reports UNAVAILABLE when it cannot reach one. Running
+# `docker compose up -d postgres` is how you satisfy that requirement; the integration tests that
+# need a live server are gated on VEXER_PG_TEST_DSN and are skipped — loudly — when it is absent.
+#
+# Only PostgreSQL is defined here. Qdrant / Kafka / Valkey / OpenSearch are introduced in the
+# increments that actually implement their integration (§23 forbids adding a database "automatically");
+# see docs/technology-selection.md for the selection rationale and licence evidence.
+
+name: vexer
+
+services:
+  postgres:
+    image: postgres:16.4-alpine          # pinned: "latest" is never a pin (§6, technology-selection §4)
+    container_name: vexer-postgres
+    environment:
+      # Local-development credentials only. Production obtains these from a secret manager (§29).
+      POSTGRES_USER: ${VEXER_PG_USER:-vexer}
+      POSTGRES_PASSWORD: ${VEXER_PG_PASSWORD:-vexer_dev_only}
+      POSTGRES_DB: ${VEXER_PG_DB:-vexer}
+      # Deterministic collation so index ordering is not locale-dependent across hosts.
+      POSTGRES_INITDB_ARGS: "--encoding=UTF8 --locale=C"
+    command:
+      - postgres
+      # scram-sha-256 rather than the older md5; TLS is terminated by the ingress in production.
+      - "-c"
+      - "password_encryption=scram-sha-256"
+      - "-c"
+      - "max_connections=200"
+      # Log anything slower than 200ms so a missing index shows up in review, not in an incident.
+      - "-c"
+      - "log_min_duration_statement=200"
+    ports:
+      - "${VEXER_PG_PORT:-5432}:5432"
+    volumes:
+      - vexer-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      # `pg_isready` alone returns true before the database accepts real connections during the
+      # init phase, so migrations could run against a not-ready server; the SELECT closes that gap.
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB} && psql -U $${POSTGRES_USER} -d $${POSTGRES_DB} -c 'SELECT 1' >/dev/null"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true        # §30: no privilege escalation inside the container
+    cap_drop:
+      - ALL                          # §30: PostgreSQL needs no Linux capabilities
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=64m
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # One-shot migration runner. Kept as a separate service so migrations are applied by an
+  # identifiable, auditable process rather than implicitly on application start (§4, §45).
+  migrate:
+    build:
+      context: .
+      dockerfile: deploy/Dockerfile
+    image: vexer/migrate:local
+    container_name: vexer-migrate
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      VEXER_POSTGRES_DSN: >-
+        postgresql://${VEXER_PG_USER:-vexer}:${VEXER_PG_PASSWORD:-vexer_dev_only}@postgres:5432/${VEXER_PG_DB:-vexer}
+    command: ["alembic", "upgrade", "head"]
+    restart: "no"
+    read_only: true                   # §30: nothing in a migration needs to write to the image
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=32m
+
+volumes:
+  vexer-pgdata:
+    driver: local
