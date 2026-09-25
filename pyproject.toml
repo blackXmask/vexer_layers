@@ -30,6 +30,7 @@ packages = [
     "business_market_intelligence",
     "opportunity_risk_intelligence",
     "legal_regulatory_ip_intelligence",
+    "vexer_platform",
 ]
 
 [tool.setuptools.package-data]
@@ -40,6 +41,7 @@ legal_regulatory_ip_intelligence = ["*.json"]
 
 [tool.pytest.ini_options]
 testpaths = [
+    "tests",
     "agent_orchestrator/tests",
     "business_market_intelligence/tests",
     "opportunity_risk_intelligence/tests",
