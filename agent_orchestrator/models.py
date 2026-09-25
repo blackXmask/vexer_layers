@@ -55,9 +55,21 @@ class DecisionReport(BaseModel):
     decision: str = ""
     decision_reason: str = ""
     confidence: float = 0.0
+    #: ``measured`` | ``mixed`` | ``none`` — distinguishes a computed confidence from one that rests
+    #: on priors or heuristics. A consumer must be able to tell a measurement from a default.
+    confidence_basis: str = "none"
     citations: List[str] = Field(default_factory=list)
     requires_human_approval: bool = False
     contributor_agents: List[str] = Field(default_factory=list)
+    #: Capability keys that actually answered (``market``, ``legal``, ``knowledge_graph``, ...).
+    #: Before this existed the report could not say where its content came from.
+    providers: List[str] = Field(default_factory=list)
+    #: ``LIVE`` | ``DEGRADED`` | ``UNAVAILABLE`` — the shared DataStatus vocabulary (§19), applied
+    #: to the report as a whole.
+    data_status: str = "UNAVAILABLE"
+    #: Explicit, itemised list of what was missing or degraded. An absent gap is indistinguishable
+    #: from a complete analysis; this makes it visible.
+    evidence_gaps: List[str] = Field(default_factory=list)
 
 
 class AgentMessage(BaseModel):

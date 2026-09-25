@@ -2,7 +2,7 @@
 Domain 7: Business & Market Intelligence — Data Models.
 """
 from enum import Enum
-from typing import Any, Dict, List
+from typing import Optional, Any, Dict, List
 from pydantic import BaseModel, Field
 
 
@@ -91,11 +91,26 @@ class CompetitorProfile(BaseModel):
 
 
 class MarketSegment(BaseModel):
+    """
+    A market segment with sizing figures.
+
+    ``is_estimate`` and ``source`` exist because the segment table is a **curated reference set**, not
+    a measurement. The previous model returned these figures for *any* topic with no indication
+    that they were static, so a report about an unrelated subject still claimed a $12B TAM. Sizing
+    numbers without provenance read as findings; these fields make the gap explicit (§41, §52).
+    """
+
     name: str
     tam_usd: int
     sam_usd: int
     growth_rate: float
     attractiveness_score: float = 0.0
+    #: True while the figures come from the curated config rather than a measured source.
+    is_estimate: bool = True
+    source: str = "curated reference set (config)"
+    #: Relevance to the queried topic, when the segment was filtered by one. None = not topic-scoped.
+    topic_relevance: Optional[float] = None
+    data_status: str = "UNAVAILABLE"
 
 
 class IntelligenceReport(BaseModel):

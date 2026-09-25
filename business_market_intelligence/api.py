@@ -54,9 +54,16 @@ def get_competitors(topic: str = _TOPIC):
 
 
 @app.get("/intelligence/segments", response_model=List[MarketSegment], dependencies=_AUTH)
-def get_segments():
-    """Market segments with TAM/SAM and attractiveness scoring."""
-    return service.get_segments()
+def get_segments(topic: Optional[str] = Query(default=None, min_length=2, max_length=500)):
+    """
+    Market segments with TAM/SAM and attractiveness scoring.
+
+    ``topic`` is optional but should be supplied: with it, segments are filtered and ranked by
+    relevance to the question and each carries ``topic_relevance``. Without it the full curated
+    reference set is returned with ``data_status: FALLBACK``, so a caller can tell a topic-scoped
+    answer from a static catalogue.
+    """
+    return service.get_segments(topic)
 
 
 @app.post("/intelligence/report", response_model=IntelligenceReport, dependencies=_AUTH)

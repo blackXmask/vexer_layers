@@ -358,6 +358,56 @@ and maintenance status: **`docs/technology-selection.md`**.
      horizontal scaling is possible; then P10 — event processing on a real broker (ingest →
      validate → dedup → correlate → enrich → persist) with DLQ and backpressure.
 
+### Increment 4 — correctness: governance fail-closed, no fabricated intelligence
+
+* **Changed:** `agents.py` (all three agents), `orchestrator.py` (synthesis), `models.py`
+  (`DecisionReport`), `api.py` (idempotency + trace), `business_market_intelligence/{analytics,
+  service,models,api}.py`, plus a new regression suite.
+* **Why:** the deep system review found the running system shipped decisions it could not justify.
+  These were not style issues; each produced a wrong or unauditable answer.
+
+**Defects fixed (each now has a regression test):**
+
+1. **The human-in-the-loop gate was bypassable by rewording.** The gate fired off planner keyword
+   matching, so "Should we expand to UAE?" required approval while "What is our market position?"
+   auto-approved — from identical data. A user could remove human oversight by choosing different
+   words. **Fixed with a coverage rule:** if any role in `required_roles_for_approval` produced no
+   completed task, approval is mandatory and risk escalates. Every phrasing now requires approval.
+2. **Hardcoded intelligence in the decision report.** `agents.py` returned two constant strings and
+   three configured confidences (0.94/0.91/0.96) for *every* query. The narrative is now derived
+   from the signals actually returned, and is **empty** when there are none.
+3. **A fabricated IP clearance.** "Low - No trademark or patent blocking conflicts identified" was
+   asserted by no analysis. Replaced with an explicit `IP clearance NOT PERFORMED` gap.
+4. **Citations to systems that do not exist.** `"Person A Knowledge Graph"` was appended
+   unconditionally. Citations now list only sources that answered with `data_status: LIVE`.
+5. **Confidence was an arithmetic mean of constants** — 0.937 for a workflow with an empty evidence
+   base. Now: **minimum** of the legs (a report cannot be more confident than its weakest input),
+   with unmeasured legs capped (`heuristic` 0.4, `insufficient-evidence` 0.3,
+   `prior-no-evidence` 0.5) and a `confidence_basis` label. Live result: **0.937 → 0.75**.
+6. **Static market segments were served for any topic.** `get_segments()` took no topic, so
+   `build_report("TOTALLY UNRELATED TOPIC")` still asserted a $12B TAM. Now topic-scoped: an
+   unrelated topic returns **0 segments**, and every segment carries `is_estimate`, `source`,
+   `topic_relevance` and `data_status`.
+7. **`/workflows/start` was not idempotent** — a client retry created a second workflow and a
+   second LLM bill. Now accepts `idempotency_key`; a repeat returns the original response with
+   `replayed: true`. Bounded, TTL'd, lock-guarded.
+8. **The trace endpoint did not exist** despite being documented in the test suite. Now
+   `GET /workflows/{id}/trace` returns the plan, per-agent status/confidence/basis/data_status,
+   degraded sources, artifacts, decision report and tool audit; 404 for an unknown session.
+9. **`DecisionReport` could not state its own provenance.** Added `providers`, `data_status`,
+   `evidence_gaps` and `confidence_basis`, with honest defaults (`UNAVAILABLE` / `none`).
+
+* **Bug I introduced and fixed during this increment:** the first version of the market agent
+  treated the signal *list* as a status string, so raw signal dicts were reported as "degraded
+  sources" in `evidence_gaps`. Caught immediately by inspecting real output; the fix separates
+  capability *statuses* from signal data.
+* **Validation:** 246 passed / 1 skipped (up from 218) — 28 new regression tests; pyflakes exit 0;
+  `test_drive.py` completes the full HITL lifecycle. Governance verified across 7 phrasings.
+* **Still not fixed (deliberately, and recorded):** `auth.enabled = false` by default on all four
+  services; the `ANTHROPIC` provider still silently returns the mock; the platform kernel is still
+  unreachable from the running system (no persistence, no provenance records). Those are roadmap
+  steps 3a and 1 — they need a deployment decision or a real database, not a patch.
+
 ### Increment 3 — P7: tool-bus runtime; removal of fabricated intelligence
 
 * **Added:** `agent_orchestrator/bus.py` (`CircuitBreaker`, `CircuitBreakers`,

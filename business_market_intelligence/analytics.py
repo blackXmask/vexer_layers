@@ -10,7 +10,7 @@ Deterministic, explainable scoring:
 All weights, lexicons and thresholds come from config.json.
 """
 import re
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 
 from .config import load_config
 from .models import (
@@ -165,8 +165,15 @@ def score_competitors(items: List[RawItem]) -> List[CompetitorProfile]:
     return profiles
 
 
-def score_segments() -> List[MarketSegment]:
-    """Attractiveness = weighted blend of normalized growth and SAM size."""
+def score_segments(topic: Optional[str] = None) -> List[MarketSegment]:
+    """
+    Attractiveness = weighted blend of normalized growth and SAM size.
+
+    ``topic`` is now accepted. When supplied, segments are ranked by lexical relevance to that topic
+    and anything with no overlap is **excluded**. Previously ``get_segments()`` took no topic and
+    returned the identical three segments for every query, so a report about an unrelated subject
+    still asserted a $12B TAM as if it had been derived for it.
+    """
     an = load_config().get("analytics", {}).get("segment", {})
     growth_weight = float(an.get("growth_weight", 0.6))
     size_weight = float(an.get("size_weight", 0.4))
@@ -180,13 +187,32 @@ def score_segments() -> List[MarketSegment]:
         growth_norm = float(seg.get("growth_rate", 0)) / max_growth
         size_norm = float(seg.get("sam_usd", 0)) / max_sam
         attractiveness = round(growth_weight * growth_norm + size_weight * size_norm, 3)
+
+        relevance: Optional[float] = None
+        if topic:
+            tokens = {t for t in _TOKEN_RE.findall(topic.lower()) if len(t) > 2}
+            name_tokens = set(_TOKEN_RE.findall(str(seg.get("name", "")).lower()))
+            overlap = tokens & name_tokens
+            if not overlap:
+                # This segment says nothing about the query; returning it would be padding.
+                continue
+            relevance = round(len(overlap) / max(len(name_tokens), 1), 3)
+
         scored.append(MarketSegment(
             name=seg.get("name", ""),
             tam_usd=int(seg.get("tam_usd", 0)),
             sam_usd=int(seg.get("sam_usd", 0)),
             growth_rate=float(seg.get("growth_rate", 0)),
-            attractiveness_score=attractiveness
+            attractiveness_score=attractiveness,
+            is_estimate=True,
+            source=str(seg.get("source", "curated reference set (config)")),
+            topic_relevance=relevance,
+            # A curated figure is never a live measurement.
+            data_status="FALLBACK" if relevance is None else "DEGRADED",
         ))
-    scored.sort(key=lambda s: s.attractiveness_score, reverse=True)
+    if topic:
+        scored.sort(key=lambda s: (s.topic_relevance or 0.0, s.attractiveness_score), reverse=True)
+    else:
+        scored.sort(key=lambda s: s.attractiveness_score, reverse=True)
     return scored
 

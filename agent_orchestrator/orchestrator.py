@@ -119,6 +119,34 @@ def execute_legal_agent(state: OrchestratorState) -> Dict[str, Any]:
 
 
 
+def _aggregate_confidence(samples: list[float], bases: list[str]) -> float:
+    """
+    Aggregate per-leg confidence into a report-level figure.
+
+    The previous implementation was the arithmetic **mean** of three configured constants, which
+    reported 0.937 for a workflow whose evidence base was partly empty. Two changes:
+
+    * **Minimum, not mean.** A decision assembled from three legs cannot be more confident than its
+      least confident leg; averaging lets two strong legs hide one failed one.
+    * **Unmeasured legs do not count as confident.** A leg labelled as a prior, a heuristic, or
+      derived from insufficient evidence is capped, so a configured constant can never set the
+      report's confidence on its own.
+    """
+    if not samples:
+        return 0.0
+    caps = {
+        "measured": 1.0,
+        "heuristic": 0.4,
+        "prior-no-evidence": 0.5,
+        "insufficient-evidence": 0.3,
+    }
+    adjusted = [
+        min(float(value), caps.get(base, 0.5))
+        for value, base in zip(samples, bases or ["measured"] * len(samples))
+    ]
+    return round(min(adjusted), 3)
+
+
 def _risk_rank(level: str) -> int:
     """Severity ordering helper for fail-closed escalation."""
     order = {"LOW": 0, "MEDIUM": 1, "HIGH": 2, "CRITICAL": 3}
@@ -177,19 +205,48 @@ def synthesis_and_governance_node(state: OrchestratorState) -> Dict[str, Any]:
     failed_tasks: list[str] = []
     contributor_agents: list[str] = []
     confidence_samples: list[float] = []
+    confidence_bases: list[str] = []
     report_citations: list[str] = []
     market_view: Dict[str, Any] = {}
     risk_view: Dict[str, Any] = {}
     legal_view: Dict[str, Any] = {}
+    degraded_sources: list[str] = []
+    covered_roles: set[str] = set()
+    report_providers: list[str] = []
 
     for tid, task in state.tasks.items():
         if task.status == TaskStatus.FAILED:
             failed_tasks.append(task.target_agent.value)
+            continue
         if task.status == TaskStatus.COMPLETED and task.output_data:
-            summaries.append(f"[{task.target_agent.value}] {task.description}")
-            contributor_agents.append(task.target_agent.value)
+            role = task.target_agent.value
+            covered_roles.add(role)
+            summaries.append(f"[{role}] {task.description}")
+            contributor_agents.append(role)
             confidence_samples.append(float(task.confidence_score))
+            # Track *why* each leg is confident so the report can distinguish a measurement from a
+            # prior. A mean of a real value and a constant is not a measurement.
+            confidence_bases.append(str(task.output_data.get("confidence_basis", "measured")))
+            degraded_sources.extend(task.output_data.get("degraded_sources", []) or [])
             report_citations.extend(c for c in task.citations if c not in report_citations)
+            # Which capability keys actually answered for this leg.
+            for key in ("market", "opportunity", "legal", "knowledge_graph", "documents", "org", "osint"):
+                probe = {
+                    "market": "market_signals",
+                    "opportunity": "evaluation",
+                    "legal": "regulatory_review",
+                }.get(key)
+                if probe is not None:
+                    if task.output_data.get(probe) or key == "legal":
+                        report_providers.append(key)
+                else:
+                    nested = {
+                        "knowledge_graph": "graph_context",
+                        "documents": "document_context",
+                        "org": "company_context",
+                    }.get(key)
+                    if nested and (task.output_data.get(nested) or {}).get("data_status") == "LIVE":
+                        report_providers.append(key)
             if task.target_agent == AgentRole.MARKET_INTELLIGENCE:
                 signals = task.output_data.get("market_signals") or []
                 first_signal = signals[0] if signals else {}
@@ -223,7 +280,7 @@ def synthesis_and_governance_node(state: OrchestratorState) -> Dict[str, Any]:
     if policy.get("always_require_human_approval", False):
         requires_approval = True
 
-    # FAIL-CLOSED governance: an incomplete analysis must never auto-approve.
+    # FAIL-CLOSED governance, part 1: an incomplete analysis must never auto-approve.
     # A failed agent (e.g. legal module unavailable) escalates risk and forces sign-off.
     recommendations_extra: list[str] = []
     if failed_tasks and policy.get("fail_closed_on_task_failure", True):
@@ -234,6 +291,40 @@ def synthesis_and_governance_node(state: OrchestratorState) -> Dict[str, Any]:
         recommendations_extra.append(
             f"Incomplete analysis: {len(failed_tasks)} agent task(s) failed "
             f"({', '.join(sorted(set(failed_tasks)))}). Mandatory re-run before commitment."
+        )
+
+    # FAIL-CLOSED governance, part 2 — THE COVERAGE RULE.
+    #
+    # A role that was never planned is not a role that passed. Before this rule, the human-in-the-loop
+    # gate was driven entirely by planner keyword matching: "Should we expand to UAE?" required
+    # approval while "What is our market position?" auto-approved, from identical data. Rephrasing a
+    # question was enough to remove human oversight.
+    #
+    # Now the gate is a function of *coverage*: if any required intelligence role did not produce a
+    # completed task, approval is mandatory and the risk level is escalated. Governance can no longer
+    # be routed around by choosing different words.
+    required_roles = policy.get(
+        "required_roles_for_approval",
+        ["MARKET_INTELLIGENCE", "OPPORTUNITY_RISK", "LEGAL_REGULATORY"],
+    )
+    missing_roles = [role for role in required_roles if role not in covered_roles]
+    if missing_roles and policy.get("fail_closed_on_missing_coverage", True):
+        requires_approval = True
+        escalation = policy.get("risk_level_on_missing_coverage", "MEDIUM")
+        if _risk_rank(risk_level) < _risk_rank(escalation):
+            risk_level = escalation
+        recommendations_extra.append(
+            f"Incomplete coverage: no completed analysis for {', '.join(missing_roles)}. "
+            "Human review is mandatory; this decision was not made on full intelligence."
+        )
+
+    # FAIL-CLOSED governance, part 3: a leg that ran but could not reach its sources is not a
+    # clean result. Degraded inputs cap the report's confidence and force review.
+    if degraded_sources and policy.get("fail_closed_on_degraded_sources", True):
+        requires_approval = True
+        recommendations_extra.append(
+            f"Degraded evidence base: {', '.join(sorted(set(degraded_sources)))} did not respond. "
+            "Findings that depend on them are unverified."
         )
 
     recommendation_proceed = policy.get(
@@ -271,7 +362,9 @@ def synthesis_and_governance_node(state: OrchestratorState) -> Dict[str, Any]:
         "risk_level": risk_level,
         "compliance_status": legal_view.get("status", "UNKNOWN") if legal_view else "UNKNOWN",
         "fit_score": risk_view.get("fit") if risk_view else None,
-        "task_failures": bool(failed_tasks)
+        "task_failures": bool(failed_tasks),
+        "missing_roles": missing_roles,
+        "degraded_sources": sorted(set(degraded_sources)),
     }
     verdict = _select_decision(
         facts,
@@ -293,10 +386,21 @@ def synthesis_and_governance_node(state: OrchestratorState) -> Dict[str, Any]:
         legal=_render_section(report_cfg.get("legal_template", "{{status}}"), legal_view, not_run_label),
         decision=verdict["decision"],
         decision_reason=verdict["reason"],
-        confidence=round(sum(confidence_samples) / len(confidence_samples), 3) if confidence_samples else 0.0,
+        confidence=_aggregate_confidence(confidence_samples, confidence_bases),
+        confidence_basis=(
+            "measured" if confidence_bases and all(b == "measured" for b in confidence_bases)
+            else "mixed" if confidence_bases else "none"
+        ),
         citations=report_citations[:10],
         requires_human_approval=requires_approval,
-        contributor_agents=sorted(set(contributor_agents))
+        contributor_agents=sorted(set(contributor_agents)),
+        providers=sorted(set(report_providers)),
+        data_status=(
+            "LIVE" if not missing_roles and not degraded_sources
+            else "DEGRADED" if not missing_roles
+            else "UNAVAILABLE"
+        ),
+        evidence_gaps=sorted(set(degraded_sources)) + [f"no analysis: {r}" for r in missing_roles],
     )
 
     return {

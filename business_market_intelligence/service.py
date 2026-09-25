@@ -57,8 +57,15 @@ class MarketIntelligenceService:
         items = collect_raw_items(topic)
         return score_competitors(items)
 
-    def get_segments(self) -> List[MarketSegment]:
-        return score_segments()
+    def get_segments(self, topic: Optional[str] = None) -> List[MarketSegment]:
+        """
+        Market segments relevant to ``topic``.
+
+        ``topic`` is optional but should always be supplied by a caller doing topic-scoped work:
+        without it the full curated set is returned, flagged ``FALLBACK``, because these are
+        reference figures rather than measurements for the query.
+        """
+        return score_segments(topic)
 
     def build_report(self, topic: str) -> IntelligenceReport:
         """Full intelligence report: signals + trends + competitors + segments,

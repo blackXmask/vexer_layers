@@ -96,11 +96,18 @@ def test_supervisor_planning_and_agent_dispatch():
 
     assert result is not None
     assert len(result["tasks"]) >= 1
-    # Check that completed tasks carry confidence scores and source citations
+    # Completed tasks must carry citations and a *derived* confidence.
+    #
+    # This used to assert `confidence_score > 0.8`, which only passed because the agents returned
+    # configured constants (0.94 / 0.91 / 0.96). Confidence is now computed from the evidence actually
+    # returned and capped when sources are unavailable, so the meaningful assertions are: it is
+    # populated, bounded, and justified by a basis label rather than asserted.
     for t in result["tasks"].values():
         if t.status == TaskStatus.COMPLETED:
-            assert t.confidence_score > 0.8
+            assert 0.0 < t.confidence_score <= 1.0
             assert len(t.citations) > 0
+            basis = t.output_data.get("confidence_basis")
+            assert basis in ("measured", "heuristic", "prior-no-evidence", "insufficient-evidence")
     assert len(result["artifacts"]) > 0
 
 
