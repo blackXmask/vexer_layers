@@ -16,3 +16,9 @@ vexer_agent_checkpoints.db-wal
 # committed because it can contain a DSN with a password). migrations/env.py reads the DSN from
 # VEXER_POSTGRES_DSN, not from alembic.ini, so nothing needs to be stored here at all.
 alembic.local.ini
+
+# Editor / agent tooling metadata — machine-local, never part of the product
+.codely-cli/
+
+# Smoke-test scratch (smoke_test.ps1 writes its logs to %TEMP%, not here)
+smoke_run.log

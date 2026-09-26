@@ -57,11 +57,22 @@ Interactive docs: `http://127.0.0.1:800{0,1,2,3}/docs`
 ## Test
 
 ```powershell
-# all 4 domains (55 tests)
+# all 4 domains — 246 pass, 1 skips unless VEXER_PG_TEST_DSN is set
 .venv\Scripts\python -m pytest -v
 
-# lint
-.venv\Scripts\python -m pyflakes agent_orchestrator business_market_intelligence opportunity_risk_intelligence legal_regulatory_ip_intelligence test_drive.py
+# the suite skips the live-PostgreSQL tests by default; a green run does NOT mean the
+# persistence layer is validated. Bring up Postgres to close that gap:
+#   docker compose up -d postgres
+#   $env:VEXER_PG_TEST_DSN = "postgresql://vexer:vexer_dev_only@127.0.0.1:5432/vexer"
+#   .venv\Scripts\python -m pytest -v
+
+# lint (0 findings is the bar)
+.venv\Scripts\python -m pyflakes agent_orchestrator business_market_intelligence opportunity_risk_intelligence legal_regulatory_ip_intelligence vexer_platform test_drive.py
+
+# end-to-end integration smoke test: boots all 4 services and asserts the governance
+# machinery actually fires over HTTP (HITL gate, UNAVAILABLE labelling, idempotent replay)
+powershell -NoProfile -ExecutionPolicy Bypass -File .\smoke_test.ps1
+```
 
 ---
 
@@ -169,6 +180,12 @@ vexer/
 └── README.md
 ```
 
+## Running the demos
+
+```powershell
 # guided end-to-end demo (asks for human approval in the terminal)
 .venv\Scripts\python test_drive.py
+
+# automated live smoke test across all four services (no prompts, exit code 0 = healthy)
+powershell -NoProfile -ExecutionPolicy Bypass -File .\smoke_test.ps1
 ```
